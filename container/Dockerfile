@@ -15,14 +15,19 @@ RUN npm install -g @iflow-ai/iflow-cli
 # Create app directory
 WORKDIR /app
 
-# Copy agent-runner package
+# Copy agent-runner package files
 COPY agent-runner/package*.json ./
-RUN npm ci --omit=dev
+
+# Install ALL dependencies (including devDependencies for build)
+RUN npm ci
 
 # Copy agent-runner source and build
 COPY agent-runner/tsconfig.json ./
 COPY agent-runner/src ./src
 RUN npm run build
+
+# Remove devDependencies to reduce image size
+RUN npm prune --omit=dev
 
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/ipc/input /workspace/ipc/output
