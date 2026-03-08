@@ -9,7 +9,7 @@ import { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.
 let db: Database.Database;
 
 function createSchema(database: Database.Database): void {
-  database.exec(\`
+  database.exec(`
     CREATE TABLE IF NOT EXISTS chats (
       jid TEXT PRIMARY KEY,
       name TEXT,
@@ -74,7 +74,7 @@ function createSchema(database: Database.Database): void {
       requires_trigger INTEGER DEFAULT 1,
       is_main INTEGER DEFAULT 0
     );
-  \`);
+  `);
 }
 
 export function initDatabase(): void {
@@ -100,41 +100,41 @@ export function storeChatMetadata(
   const group = isGroup === undefined ? null : isGroup ? 1 : 0;
 
   if (name) {
-    db.prepare(\`
+    db.prepare(`
       INSERT INTO chats (jid, name, last_message_time, channel, is_group) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(jid) DO UPDATE SET
         name = excluded.name,
         last_message_time = MAX(last_message_time, excluded.last_message_time),
         channel = COALESCE(excluded.channel, channel),
         is_group = COALESCE(excluded.is_group, is_group)
-    \`).run(chatJid, name, timestamp, ch, group);
+    `).run(chatJid, name, timestamp, ch, group);
   } else {
-    db.prepare(\`
+    db.prepare(`
       INSERT INTO chats (jid, name, last_message_time, channel, is_group) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(jid) DO UPDATE SET
         last_message_time = MAX(last_message_time, excluded.last_message_time),
         channel = COALESCE(excluded.channel, channel),
         is_group = COALESCE(excluded.is_group, is_group)
-    \`).run(chatJid, chatJid, timestamp, ch, group);
+    `).run(chatJid, chatJid, timestamp, ch, group);
   }
 }
 
 export function storeMessage(msg: NewMessage): void {
-  db.prepare(\`
+  db.prepare(`
     INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  \`).run(msg.id, msg.chat_jid, msg.sender, msg.sender_name, msg.content, msg.timestamp, msg.is_from_me ? 1 : 0, msg.is_bot_message ? 1 : 0);
+  `).run(msg.id, msg.chat_jid, msg.sender, msg.sender_name, msg.content, msg.timestamp, msg.is_from_me ? 1 : 0, msg.is_bot_message ? 1 : 0);
 }
 
 export function getNewMessages(jids: string[], lastTimestamp: string, botPrefix: string): { messages: NewMessage[]; newTimestamp: string } {
   if (jids.length === 0) return { messages: [], newTimestamp: lastTimestamp };
   const placeholders = jids.map(() => '?').join(',');
-  const rows = db.prepare(\`
+  const rows = db.prepare(`
     SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
-    FROM messages WHERE timestamp > ? AND chat_jid IN (\${placeholders})
+    FROM messages WHERE timestamp > ? AND chat_jid IN (${placeholders})
       AND is_bot_message = 0 AND content NOT LIKE ?
     ORDER BY timestamp
-  \`).all(lastTimestamp, ...jids, \`\${botPrefix}:%\`) as NewMessage[];
+  `).all(lastTimestamp, ...jids, `${botPrefix}:%`) as NewMessage[];
 
   let newTimestamp = lastTimestamp;
   for (const row of rows) {
@@ -145,10 +145,10 @@ export function getNewMessages(jids: string[], lastTimestamp: string, botPrefix:
 
 // Task functions
 export function createTask(task: Omit<ScheduledTask, 'last_run' | 'last_result'>): void {
-  db.prepare(\`
+  db.prepare(`
     INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  \`).run(task.id, task.group_folder, task.chat_jid, task.prompt, task.schedule_type, task.schedule_value, task.context_mode || 'isolated', task.next_run, task.status, task.created_at);
+  `).run(task.id, task.group_folder, task.chat_jid, task.prompt, task.schedule_type, task.schedule_value, task.context_mode || 'isolated', task.next_run, task.status, task.created_at);
 }
 
 export function getTaskById(id: string): ScheduledTask | undefined {
@@ -161,12 +161,12 @@ export function getAllTasks(): ScheduledTask[] {
 
 export function getDueTasks(): ScheduledTask[] {
   const now = new Date().toISOString();
-  return db.prepare(\`SELECT * FROM scheduled_tasks WHERE status = 'active' AND next_run IS NOT NULL AND next_run <= ? ORDER BY next_run\`).all(now) as ScheduledTask[];
+  return db.prepare(`SELECT * FROM scheduled_tasks WHERE status = 'active' AND next_run IS NOT NULL AND next_run <= ? ORDER BY next_run`).all(now) as ScheduledTask[];
 }
 
 export function updateTaskAfterRun(id: string, nextRun: string | null, lastResult: string): void {
   const now = new Date().toISOString();
-  db.prepare(\`UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END WHERE id = ?\`).run(nextRun, now, lastResult, nextRun, id);
+  db.prepare(`UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END WHERE id = ?`).run(nextRun, now, lastResult, nextRun, id);
 }
 
 export function deleteTask(id: string): void {
@@ -175,7 +175,7 @@ export function deleteTask(id: string): void {
 }
 
 export function logTaskRun(log: TaskRunLog): void {
-  db.prepare(\`INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error) VALUES (?, ?, ?, ?, ?, ?)\`).run(log.task_id, log.run_at, log.duration_ms, log.status, log.result, log.error);
+  db.prepare(`INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error) VALUES (?, ?, ?, ?, ?, ?)`).run(log.task_id, log.run_at, log.duration_ms, log.status, log.result, log.error);
 }
 
 // Router state
@@ -215,7 +215,7 @@ export function getRegisteredGroup(jid: string): (RegisteredGroup & { jid: strin
 }
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
-  db.prepare(\`INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main) VALUES (?, ?, ?, ?, ?, ?, ?, ?)\`).run(
+  db.prepare(`INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
     jid, group.name, group.folder, group.trigger, group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === false ? 0 : 1,
