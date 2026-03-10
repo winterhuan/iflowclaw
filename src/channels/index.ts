@@ -1,15 +1,21 @@
+import { logger } from '../logger.js';
+
+let loaded = false;
+
 /**
- * Channel barrel export
- * Import this module to trigger all channel self-registrations
+ * Load Feishu channel module.
  */
+export async function loadChannelModules(): Promise<void> {
+  if (loaded) return;
 
-// Re-export registry functions
-export { registerChannel, getChannels, findChannelForJid, connectAllChannels, disconnectAllChannels } from './registry.js';
+  // Import Feishu channel - it will self-register via registerChannel()
+  try {
+    await import('./feishu.js');
+    logger.debug({ channel: 'feishu' }, 'Channel loaded');
+  } catch (err: any) {
+    logger.error({ channel: 'feishu', error: err.message }, 'Failed to load channel');
+    throw err;
+  }
 
-// Import channel implementations to trigger self-registration
-// Add new channels here as they are implemented
-// import './whatsapp.js';
-// import './telegram.js';
-// import './discord.js';
-// import './slack.js';
-// import './feishu.js';
+  loaded = true;
+}

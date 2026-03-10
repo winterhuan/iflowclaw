@@ -7,6 +7,7 @@ dist/
 # Environment
 .env
 .env.local
+*.local.json
 
 # Data
 store/
@@ -25,3 +26,12 @@ Thumbs.db
 
 # Test
 coverage/
+
+# TypeScript
+tsconfig.tsbuildinfo
+
+# iFlow CLI config - keep skills but ignore other state
+.iflow/*
+!.iflow/skills/
+**/.iflow/*
+!**/.iflow/skills/

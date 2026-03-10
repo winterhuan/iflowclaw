@@ -1,46 +1,34 @@
-/**
- * Channel Registry for iFlowClaw
- * Provides a unified interface for registering communication channels
- */
-import { Channel } from '../types.js';
-import { logger } from '../logger.js';
+import {
+  Channel,
+  OnInboundMessage,
+  OnChatMetadata,
+  RegisteredGroup,
+} from '../types.js';
 
-const channels: Channel[] = [];
-
-export function registerChannel(factory: () => Channel | null): void {
-  const channel = factory();
-  if (channel) {
-    channels.push(channel);
-    logger.info({ channel: channel.name }, 'Channel registered');
-  }
+export interface ChannelOpts {
+  onMessage: OnInboundMessage;
+  onChatMetadata: OnChatMetadata;
+  registeredGroups: () => Record<string, RegisteredGroup>;
+  /**
+   * Optional callback for channels to auto-register unregistered groups.
+   * Called when a channel receives a message from an unregistered chat.
+   * If returned true, the group was registered and message should be processed.
+   */
+  autoRegisterGroup?: (jid: string, name: string, channel: string) => boolean;
 }
 
-export function getChannels(): Channel[] {
-  return channels;
+export type ChannelFactory = (opts: ChannelOpts) => Channel | null;
+
+const registry = new Map<string, ChannelFactory>();
+
+export function registerChannel(name: string, factory: ChannelFactory): void {
+  registry.set(name, factory);
 }
 
-export function findChannelForJid(jid: string): Channel | undefined {
-  return channels.find(c => c.ownsJid(jid));
+export function getChannelFactory(name: string): ChannelFactory | undefined {
+  return registry.get(name);
 }
 
-export async function connectAllChannels(): Promise<void> {
-  for (const channel of channels) {
-    try {
-      await channel.connect();
-      logger.info({ channel: channel.name }, 'Channel connected');
-    } catch (err) {
-      logger.error({ channel: channel.name, err }, 'Failed to connect channel');
-    }
-  }
-}
-
-export async function disconnectAllChannels(): Promise<void> {
-  for (const channel of channels) {
-    try {
-      await channel.disconnect();
-      logger.info({ channel: channel.name }, 'Channel disconnected');
-    } catch (err) {
-      logger.error({ channel: channel.name, err }, 'Failed to disconnect channel');
-    }
-  }
+export function getRegisteredChannelNames(): string[] {
+  return [...registry.keys()];
 }

@@ -1,34 +1,11 @@
-export interface AdditionalMount {
-  hostPath: string;
-  containerPath?: string;
-  readonly?: boolean;
-}
-
-export interface MountAllowlist {
-  allowedRoots: AllowedRoot[];
-  blockedPatterns: string[];
-  nonMainReadOnly: boolean;
-}
-
-export interface AllowedRoot {
-  path: string;
-  allowReadWrite: boolean;
-  description?: string;
-}
-
-export interface ContainerConfig {
-  additionalMounts?: AdditionalMount[];
-  timeout?: number;
-}
-
 export interface RegisteredGroup {
   name: string;
   folder: string;
   trigger: string;
   added_at: string;
-  containerConfig?: ContainerConfig;
-  requiresTrigger?: boolean;
-  isMain?: boolean;
+  requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+  isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  agentConfig?: AgentConfig; // Optional config for agent timeout
 }
 
 export interface NewMessage {
@@ -67,6 +44,7 @@ export interface TaskRunLog {
 }
 
 // --- Channel abstraction ---
+
 export interface Channel {
   name: string;
   connect(): Promise<void>;
@@ -74,11 +52,18 @@ export interface Channel {
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
+  // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
+  // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
 }
 
+// Callback type that channels use to deliver inbound messages
 export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
+
+// Callback for chat metadata discovery.
+// name is optional — channels that deliver names inline (Telegram) pass it here;
+// channels that sync names separately (via syncGroups) omit it.
 export type OnChatMetadata = (
   chatJid: string,
   timestamp: string,
@@ -86,3 +71,25 @@ export type OnChatMetadata = (
   channel?: string,
   isGroup?: boolean,
 ) => void;
+
+export interface AvailableGroup {
+  jid: string;
+  name: string;
+  lastActivity: string;
+  isRegistered: boolean;
+}
+
+// Process interface for agent execution
+export interface AgentProcess {
+  kill(signal?: string | number): boolean | void;
+  killed?: boolean;
+  stdin?: {
+    write(data: string): void;
+    end(): void;
+  } | null;
+}
+
+// Agent config for timeout settings
+export interface AgentConfig {
+  timeout?: number;
+}

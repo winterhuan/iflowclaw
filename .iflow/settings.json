@@ -1,0 +1,17 @@
+{
+  "contextFileName": ["IFLOW.md", "AGENTS.md"],
+  "mcpServers": {
+    "modelscope-mcp-server": {
+      "description": "魔搭社区官方MCP服务器，提供模型、数据集、创空间、论文搜索及AIGC图像生成功能",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "iflow-mcp-modelscope-mcp-server",
+        "modelscope-mcp-server"
+      ],
+      "env": {
+        "MODELSCOPE_API_TOKEN": "ms-c3247518-b69a-49e3-bc0b-4eea81de95d7"
+      }
+    }
+  }
+}
