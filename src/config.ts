@@ -29,10 +29,10 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 
 // Agent timeout (how long to wait for agent response)
 export const AGENT_TIMEOUT = parseInt(
-  process.env.AGENT_TIMEOUT || '60000',
+  process.env.AGENT_TIMEOUT || '300000',
   10,
-);
-export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '60000', 10); // 1min default
+); // 5min default
+export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '180000', 10); // 3min default
 export const MAX_CONCURRENT_AGENTS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_AGENTS || '5', 10) || 5,

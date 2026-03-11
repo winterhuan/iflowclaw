@@ -7,7 +7,7 @@ import path from 'path';
 import { AGENT_TIMEOUT } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { runAgentDirect, AgentInput, AgentOutput } from './agent-runner.js';
+import { runAgentDirect, type AgentInput, type AgentOutput } from './agent-runner.js';
 import { AvailableGroup, RegisteredGroup } from './types.js';
 
 export { AgentInput, AgentOutput };

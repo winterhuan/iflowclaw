@@ -87,7 +87,22 @@ npm start
 | `npm run dev` | 开发模式（tsx 运行源码） |
 | `npm run dev:watch` | 开发热重载 |
 
+## 全局命令
+
+安装后可执行以下命令将 `iflowclaw` 链接到全局，之后可在任意目录使用：
+
+```bash
+npm link
+iflowclaw setup    # 配置飞书凭证
+iflowclaw start    # 启动服务
+iflowclaw stop     # 停止服务
+iflowclaw status   # 查看状态
+iflowclaw logs     # 查看日志
+```
+
 ## 管理命令
+
+在项目目录下也可以通过 npm scripts 运行：
 
 ```bash
 npm run setup    # 配置飞书凭证
@@ -98,7 +113,7 @@ npm run status   # 查看状态
 npm run logs     # 查看日志
 ```
 
-或直接使用 CLI：
+或直接运行脚本：
 
 ```bash
 ./bin/iflowclaw setup

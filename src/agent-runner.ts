@@ -247,7 +247,7 @@ function buildIFlowOptions(
     logLevel: "DEBUG",
     cwd: groupDir,
     autoStartProcess: true,
-    timeout: 120000, // 2 minute
+    timeout: 1800000, // 30 minute
     mcpServers: [mcpServerConfig],
     sessionSettings: {
       system_prompt: systemPrompt,

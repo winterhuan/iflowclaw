@@ -23,7 +23,7 @@
 
 ## 工作空间
 
-文件保存在 `/workspace/group/`（读写）。
+当前工作目录就是你所在群组的专属目录（读写）。直接使用相对路径保存文件即可，如 `conversations/`、`notes.md` 等。
 
 ## 可用工具
 
@@ -99,7 +99,7 @@ register_group(
 查看可注册群组：
 
 ```
-Read: /workspace/group/../data/ipc/main/available_groups.json
+Read: ../data/ipc/main/available_groups.json
 ```
 
 ### 跨群任务调度
@@ -117,4 +117,4 @@ schedule_task(
 
 ### 全局记忆
 
-可以读写 `/workspace/project/groups/global/AGENTS.md` 来更新所有群组的共享记忆。
+可以读写 `../global/AGENTS.md` 来更新所有群组的共享记忆。

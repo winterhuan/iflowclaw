@@ -32,6 +32,10 @@ export class FeishuChannel implements Channel {
   private eventDispatcher: lark.EventDispatcher;
   private connected = false;
   private opts: FeishuChannelOpts;
+  private healthCheckInterval?: NodeJS.Timeout;
+  private lastMessageTime = 0;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
 
   constructor(appId: string, appSecret: string, opts: FeishuChannelOpts) {
     this.opts = opts;
@@ -64,8 +68,89 @@ export class FeishuChannel implements Channel {
       eventDispatcher: this.eventDispatcher,
     });
     this.connected = true;
+    this.lastMessageTime = Date.now();
+    this.startHealthCheck();
     logger.info('Feishu long connection established');
     console.log('\n  Feishu bot connected via WebSocket long connection\n');
+  }
+
+  private startHealthCheck(): void {
+    // 每 5 分钟检查一次连接状态
+    this.healthCheckInterval = setInterval(async () => {
+      const now = Date.now();
+      const timeSinceLastMessage = now - this.lastMessageTime;
+
+      // 如果超过 15 分钟没有收到任何消息，尝试获取 access_token 验证连接
+      if (timeSinceLastMessage > 15 * 60 * 1000) {
+        logger.debug({ timeSinceLastMessage }, 'Feishu health check: verifying connection');
+        try {
+          // 获取 tenant_access_token 验证连接和凭证是否有效
+          const envVars = readEnvFile(['FEISHU_APP_ID', 'FEISHU_APP_SECRET']);
+          const appId = process.env.FEISHU_APP_ID || envVars.FEISHU_APP_ID || '';
+          const appSecret = process.env.FEISHU_APP_SECRET || envVars.FEISHU_APP_SECRET || '';
+
+          const response = await this.client.auth.v3.tenantAccessToken.internal({
+            data: {
+              app_id: appId,
+              app_secret: appSecret,
+            },
+          });
+          // API 调用成功即可，不检查具体返回值
+          if (response.code === 0) {
+            this.lastMessageTime = now;
+            this.reconnectAttempts = 0;
+            logger.debug('Feishu health check passed');
+          } else {
+            throw new Error(`Health check failed with code: ${response.code}`);
+          }
+        } catch (err) {
+          logger.warn({ err, attempts: this.reconnectAttempts }, 'Feishu health check failed');
+          this.handleDisconnect();
+        }
+      }
+    }, 5 * 60 * 1000);
+  }
+
+  private async handleDisconnect(): Promise<void> {
+    if (!this.connected) return;
+
+    this.reconnectAttempts++;
+    if (this.reconnectAttempts > this.maxReconnectAttempts) {
+      logger.error({ attempts: this.reconnectAttempts }, 'Feishu max reconnect attempts reached');
+      this.connected = false;
+      return;
+    }
+
+    logger.info({ attempt: this.reconnectAttempts }, 'Attempting to reconnect Feishu WebSocket');
+    this.connected = false;
+
+    try {
+      // 关闭旧连接
+      this.wsClient.close({ force: true });
+
+      // 重新创建客户端
+      const envVars = readEnvFile(['FEISHU_APP_ID', 'FEISHU_APP_SECRET']);
+      const appId = process.env.FEISHU_APP_ID || envVars.FEISHU_APP_ID || '';
+      const appSecret = process.env.FEISHU_APP_SECRET || envVars.FEISHU_APP_SECRET || '';
+
+      this.wsClient = new lark.WSClient({
+        appId,
+        appSecret,
+        domain: lark.Domain.Feishu,
+        loggerLevel: lark.LoggerLevel.info,
+      });
+
+      await this.wsClient.start({
+        eventDispatcher: this.eventDispatcher,
+      });
+
+      this.connected = true;
+      this.lastMessageTime = Date.now();
+      this.reconnectAttempts = 0;
+      logger.info('Feishu WebSocket reconnected successfully');
+    } catch (err) {
+      logger.error({ err, attempt: this.reconnectAttempts }, 'Failed to reconnect Feishu WebSocket');
+    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -101,6 +186,10 @@ export class FeishuChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = undefined;
+    }
     this.connected = false;
     logger.info('Feishu channel disconnected');
   }
@@ -111,6 +200,9 @@ export class FeishuChannel implements Channel {
 
   private async handleMessage(data: any): Promise<void> {
     try {
+      // 更新最后消息时间，用于健康检查
+      this.lastMessageTime = Date.now();
+
       const message = data.message;
       const sender = data.sender;
 

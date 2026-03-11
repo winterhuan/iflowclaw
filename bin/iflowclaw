@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 解析符号链接的真实路径，支持 npm link 全局调用
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+PROJECT_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 PID_FILE="$PROJECT_ROOT/data/iflowclaw.pid"
 LOG_FILE="$PROJECT_ROOT/logs/iflowclaw.log"
 ENV_FILE="$PROJECT_ROOT/.env"
@@ -150,11 +152,6 @@ start() {
     if kill -0 "$PID" 2>/dev/null; then
         echo "✓ iFlowClaw 已启动 (PID: $PID)"
         echo "📄 日志: $LOG_FILE"
-        echo ""
-        echo "💡 提示:"
-        echo "   - 在飞书开放平台配置事件订阅 (WebSocket 长连接)"
-        echo "   - 添加事件: im.message.receive_v1"
-        echo "   - 发布应用后即可使用"
     else
         echo "❌ 启动失败，请检查日志"
         rm -f "$PID_FILE"
