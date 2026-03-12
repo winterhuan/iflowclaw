@@ -36,6 +36,95 @@ send_message(text: "消息内容", sender?: "角色名")
 - 可多次调用，用于进度更新或多条消息
 - `sender` 参数可选，设置后消息会以该角色名义发送
 
+### 记忆管理
+
+你可以使用以下工具管理长期记忆。这些记忆会在后续对话中自动提供上下文。
+
+#### save_memory
+
+保存重要信息到长期记忆。
+
+```
+save_memory(
+  key: "记忆的标识符",
+  value: "记忆的内容",
+  category: "fact" | "preference" | "decision" | "task" | "summary" | "context",
+  importance?: 1-5,           // 重要性，默认3
+  expires_in_days?: number    // 可选：过期天数
+)
+```
+
+**你应该主动保存的信息：**
+- 用户的基本信息（姓名、公司、职位）
+- 用户明确表达的偏好（如"我喜欢简洁回答"）
+- 重要的决策或结论
+- 需要后续跟进的事项
+- 当前项目的上下文信息
+
+**示例：**
+```
+save_memory(
+  key: "user_name",
+  value: "张三",
+  category: "fact",
+  importance: 5
+)
+
+save_memory(
+  key: "project_goal",
+  value: "构建一个电商平台，使用 React + Node.js",
+  category: "context",
+  importance: 4
+)
+```
+
+#### search_memory
+
+搜索之前保存的记忆。
+
+```
+search_memory(
+  query: "搜索关键词",
+  category?: "fact" | "preference" | "decision" | "task" | "summary" | "context",
+  limit?: number  // 默认10
+)
+```
+
+**示例：**
+```
+search_memory(query: "用户")  // 搜索包含"用户"的记忆
+```
+
+#### list_memories
+
+列出所有保存的记忆。
+
+```
+list_memories(
+  category?: "fact" | "preference" | "decision" | "task" | "summary" | "context",
+  limit?: number  // 默认20
+)
+```
+
+**示例：**
+```
+list_memories(category: "fact")  // 列出所有事实类记忆
+list_memories()                   // 列出所有记忆
+```
+
+#### delete_memory
+
+删除一条记忆。
+
+```
+delete_memory(key: "记忆的标识符")
+```
+
+**示例：**
+```
+delete_memory(key: "temp_task")
+```
+
 ### 任务调度
 
 ```
