@@ -65,6 +65,7 @@ save_memory(
 ```
 
 **你应该主动保存的信息：**
+
 - 用户的基本信息（姓名、公司、职位）
 - 用户明确表达的偏好（如"我喜欢简洁回答"）
 - 重要的决策或结论
@@ -72,6 +73,7 @@ save_memory(
 - 当前项目的上下文信息
 
 **示例：**
+
 ```
 save_memory(
   key: "user_name",
@@ -101,6 +103,7 @@ search_memory(
 ```
 
 **示例：**
+
 ```
 search_memory(query: "用户")  // 搜索包含"用户"的记忆
 ```
@@ -117,6 +120,7 @@ list_memories(
 ```
 
 **示例：**
+
 ```
 list_memories(category: "fact")  // 列出所有事实类记忆
 list_memories()                   // 列出所有记忆
@@ -131,6 +135,7 @@ delete_memory(key: "记忆的标识符")
 ```
 
 **示例：**
+
 ```
 delete_memory(key: "temp_task")
 ```

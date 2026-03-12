@@ -25,6 +25,33 @@
 
 当前工作目录就是你所在群组的专属目录（读写）。直接使用相对路径保存文件即可，如 `conversations/`、`notes.md` 等。
 
+## Skills 存放策略
+
+| 层级 | 路径 | 用途 |
+|------|------|------|
+| 项目 | `.iflow/skills/` | 本项目所有群组共享 |
+| 群组 | `.iflow/skills/` | 当前群组专属 |
+
+- Skills 直接存放在对应目录
+- 群组级 skills 按需添加，仅该群组可用
+
+### 安装技能
+
+在群组目录下运行：
+
+```bash
+# 安装项目级技能（所有群组可用）
+cd ../../ && iflow skills add <skill-name>
+
+# 安装群组专属技能
+iflow skills add <skill-name>
+```
+
+查看可用技能：
+```bash
+iflow skills search
+```
+
 ## 可用工具
 
 ### 发送消息
@@ -55,6 +82,7 @@ save_memory(
 ```
 
 **你应该主动保存的信息：**
+
 - 用户的基本信息（姓名、公司、职位）
 - 用户明确表达的偏好（如"我喜欢简洁回答"）
 - 重要的决策或结论
@@ -62,6 +90,7 @@ save_memory(
 - 当前项目的上下文信息
 
 **示例：**
+
 ```
 save_memory(
   key: "user_name",
@@ -91,6 +120,7 @@ search_memory(
 ```
 
 **示例：**
+
 ```
 search_memory(query: "用户")  // 搜索包含"用户"的记忆
 ```
@@ -107,6 +137,7 @@ list_memories(
 ```
 
 **示例：**
+
 ```
 list_memories(category: "fact")  // 列出所有事实类记忆
 list_memories()                   // 列出所有记忆
@@ -121,6 +152,7 @@ delete_memory(key: "记忆的标识符")
 ```
 
 **示例：**
+
 ```
 delete_memory(key: "temp_task")
 ```
