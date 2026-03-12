@@ -143,6 +143,37 @@ export function startIpcWatcher(deps: IpcDeps): void {
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
       }
+
+      // Process memories from this group's IPC directory
+      const memoriesDir = path.join(ipcBaseDir, sourceGroup, 'memories');
+      try {
+        if (fs.existsSync(memoriesDir)) {
+          const memoryFiles = fs
+            .readdirSync(memoriesDir)
+            .filter((f) => f.endsWith('.json'));
+          for (const file of memoryFiles) {
+            const filePath = path.join(memoriesDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              await processMemoryIpc(data, sourceGroup, deps);
+              fs.unlinkSync(filePath);
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Error processing IPC memory',
+              );
+              const errorDir = path.join(ipcBaseDir, 'errors');
+              fs.mkdirSync(errorDir, { recursive: true });
+              fs.renameSync(
+                filePath,
+                path.join(errorDir, `${sourceGroup}-${file}`),
+              );
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error reading IPC memories directory');
+      }
     }
 
     setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
@@ -450,5 +481,146 @@ export async function processTaskIpc(
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
+  }
+}
+
+// --- Memory IPC processing ---
+
+import {
+  deleteMemory,
+  listMemories,
+  saveMemory,
+  searchMemories,
+  type MemoryCategory,
+} from './db.js';
+import { listAndFormatMemories, searchAndFormatMemories } from './memory.js';
+
+export async function processMemoryIpc(
+  data: {
+    type: string;
+    key?: string;
+    value?: string;
+    category?: string;
+    importance?: number;
+    expires_in_days?: number;
+    query?: string;
+    limit?: number;
+    groupFolder?: string;
+  },
+  sourceGroup: string,
+  deps: IpcDeps,
+): Promise<void> {
+  // Authorization: verify this group can access this memory
+  const registeredGroups = deps.registeredGroups();
+  const isMain = Object.values(registeredGroups).some(
+    (g) => g.folder === sourceGroup && g.isMain,
+  );
+
+  switch (data.type) {
+    case 'save_memory':
+      if (data.key && data.value && data.category) {
+        const targetFolder = data.groupFolder || sourceGroup;
+        // Non-main groups can only save to their own folder
+        if (!isMain && targetFolder !== sourceGroup) {
+          logger.warn(
+            { sourceGroup, targetFolder },
+            'Unauthorized save_memory attempt blocked',
+          );
+          break;
+        }
+
+        const expiresAt = data.expires_in_days
+          ? new Date(Date.now() + data.expires_in_days * 24 * 60 * 60 * 1000).toISOString()
+          : undefined;
+
+        saveMemory({
+          group_folder: targetFolder,
+          key: data.key,
+          value: data.value,
+          category: data.category as MemoryCategory,
+          importance: data.importance ?? 3,
+          expires_at: expiresAt,
+        });
+
+        logger.info(
+          { key: data.key, category: data.category, sourceGroup: targetFolder },
+          'Memory saved via IPC',
+        );
+      }
+      break;
+
+    case 'search_memory':
+      if (data.query) {
+        // Non-main groups can only search their own memories
+        const targetFolder = isMain ? (data.groupFolder || sourceGroup) : sourceGroup;
+        const results = searchAndFormatMemories(
+          targetFolder,
+          data.query,
+          data.category,
+          data.limit ?? 10,
+        );
+
+        // Send results back via message
+        const groupEntry = Object.entries(registeredGroups).find(
+          ([, g]) => g.folder === sourceGroup,
+        );
+        if (groupEntry) {
+          await deps.sendMessage(groupEntry[0], results);
+        }
+
+        logger.info(
+          { query: data.query, sourceGroup: targetFolder },
+          'Memory search via IPC',
+        );
+      }
+      break;
+
+    case 'list_memories':
+      {
+        // Non-main groups can only list their own memories
+        const targetFolder = isMain ? (data.groupFolder || sourceGroup) : sourceGroup;
+        const results = listAndFormatMemories(
+          targetFolder,
+          data.category,
+          data.limit ?? 20,
+        );
+
+        // Send results back via message
+        const groupEntry = Object.entries(registeredGroups).find(
+          ([, g]) => g.folder === sourceGroup,
+        );
+        if (groupEntry) {
+          await deps.sendMessage(groupEntry[0], results);
+        }
+
+        logger.info(
+          { category: data.category, sourceGroup: targetFolder },
+          'Memory list via IPC',
+        );
+      }
+      break;
+
+    case 'delete_memory':
+      if (data.key) {
+        // Non-main groups can only delete their own memories
+        const targetFolder = isMain ? (data.groupFolder || sourceGroup) : sourceGroup;
+        const success = deleteMemory(targetFolder, data.key);
+
+        if (success) {
+          logger.info(
+            { key: data.key, sourceGroup: targetFolder },
+            'Memory deleted via IPC',
+          );
+        } else {
+          logger.warn(
+            { key: data.key, sourceGroup: targetFolder },
+            'Memory not found for deletion',
+          );
+        }
+      }
+      break;
+
+    default:
+      logger.warn({ type: data.type }, 'Unknown IPC memory type');
   }
 }

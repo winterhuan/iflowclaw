@@ -10,6 +10,7 @@ import {
   RegisteredGroup,
   ScheduledTask,
   TaskRunLog,
+  Memory,
 } from './types.js';
 
 let db: Database.Database;
@@ -152,6 +153,28 @@ function createSchema(database: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
+  `);
+
+  // Create memories table for structured memory storage
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      session_id TEXT,
+      category TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      importance INTEGER DEFAULT 3,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT,
+      metadata TEXT,
+      UNIQUE(group_folder, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_memories_group ON memories(group_folder);
+    CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+    CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
+    CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at);
   `);
 }
 
@@ -830,3 +853,125 @@ function migrateJsonState(): void {
     }
   }
 }
+
+// --- Memory accessors ---
+
+export function saveMemory(
+  memory: Omit<Memory, 'id' | 'created_at' | 'updated_at'> & { id?: string; created_at?: string },
+): string {
+  const id = memory.id || `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const now = new Date().toISOString();
+
+  db.prepare(
+    `INSERT OR REPLACE INTO memories 
+     (id, group_folder, session_id, category, key, value, importance, created_at, updated_at, expires_at, metadata)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    memory.group_folder,
+    memory.session_id || null,
+    memory.category,
+    memory.key,
+    memory.value,
+    memory.importance ?? 3,
+    memory.created_at || now,
+    now,
+    memory.expires_at || null,
+    memory.metadata || null,
+  );
+
+  return id;
+}
+
+export function getMemory(
+  groupFolder: string,
+  key: string,
+): Memory | undefined {
+  const row = db
+    .prepare('SELECT * FROM memories WHERE group_folder = ? AND key = ?')
+    .get(groupFolder, key) as Memory | undefined;
+  return row;
+}
+
+export function searchMemories(
+  groupFolder: string,
+  query: string,
+  category?: string,
+  limit: number = 10,
+): Memory[] {
+  let sql = `
+    SELECT * FROM memories 
+    WHERE group_folder = ? 
+    AND (key LIKE ? OR value LIKE ?)
+    AND (expires_at IS NULL OR expires_at > ?)
+  `;
+  const params: (string | number)[] = [groupFolder, `%${query}%`, `%${query}%`, new Date().toISOString()];
+
+  if (category) {
+    sql += ' AND category = ?';
+    params.push(category);
+  }
+
+  sql += ' ORDER BY importance DESC, updated_at DESC LIMIT ?';
+  params.push(limit);
+
+  return db.prepare(sql).all(...params) as Memory[];
+}
+
+export function listMemories(
+  groupFolder: string,
+  category?: string,
+  limit: number = 20,
+): Memory[] {
+  let sql = `
+    SELECT * FROM memories 
+    WHERE group_folder = ? 
+    AND (expires_at IS NULL OR expires_at > ?)
+  `;
+  const params: (string | number)[] = [groupFolder, new Date().toISOString()];
+
+  if (category) {
+    sql += ' AND category = ?';
+    params.push(category);
+  }
+
+  sql += ' ORDER BY importance DESC, updated_at DESC LIMIT ?';
+  params.push(limit);
+
+  return db.prepare(sql).all(...params) as Memory[];
+}
+
+export function deleteMemory(groupFolder: string, key: string): boolean {
+  const result = db
+    .prepare('DELETE FROM memories WHERE group_folder = ? AND key = ?')
+    .run(groupFolder, key);
+  return result.changes > 0;
+}
+
+export function cleanupExpiredMemories(): number {
+  const result = db
+    .prepare('DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?')
+    .run(new Date().toISOString());
+  return result.changes;
+}
+
+export function getHighImportanceMemories(
+  groupFolder: string,
+  minImportance: number = 4,
+  limit: number = 10,
+): Memory[] {
+  return db
+    .prepare(
+      `SELECT * FROM memories 
+       WHERE group_folder = ? 
+       AND importance >= ?
+       AND (expires_at IS NULL OR expires_at > ?)
+       ORDER BY importance DESC, updated_at DESC
+       LIMIT ?`,
+    )
+    .all(groupFolder, minImportance, new Date().toISOString(), limit) as Memory[];
+}
+
+// Re-export types for convenience
+export type { Memory } from './types.js';
+export type { MemoryCategory } from './types.js';

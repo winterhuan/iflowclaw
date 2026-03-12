@@ -17,6 +17,7 @@ import { logger } from './logger.js';
 import { GROUPS_DIR, DATA_DIR } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { RegisteredGroup } from './types.js';
+import { getMemoryContext } from './memory.js';
 const IPC_POLL_MS = 500;
 
 // Group-level client cache for persistent connections
@@ -197,6 +198,7 @@ function setupGroupEnvironment(group: RegisteredGroup): {
   fs.mkdirSync(path.join(ipcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(ipcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(ipcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(ipcDir, 'memories'), { recursive: true });
 
   return { groupDir, ipcDir };
 }
@@ -210,14 +212,25 @@ function buildIFlowOptions(
   groupDir: string,
   globalDir: string,
 ): IFlowOptions {
-  // Load global AGENTS.md as additional system context
-  let systemPrompt: string | undefined;
+  // Build system prompt with memory context
+  const parts: string[] = [];
+
+  // 1. Inject high-importance memories
+  const memoryContext = getMemoryContext(input.groupFolder, 10);
+  if (memoryContext) {
+    parts.push(memoryContext);
+    parts.push('');
+  }
+
+  // 2. Load global AGENTS.md as additional system context
   if (!input.isMain && fs.existsSync(globalDir)) {
     const globalAgentsPath = path.join(globalDir, 'AGENTS.md');
     if (fs.existsSync(globalAgentsPath)) {
-      systemPrompt = fs.readFileSync(globalAgentsPath, 'utf-8');
+      parts.push(fs.readFileSync(globalAgentsPath, 'utf-8'));
     }
   }
+
+  const systemPrompt = parts.length > 0 ? parts.join('\n') : undefined;
 
   // IPC directory for this group
   const ipcDir = path.join(DATA_DIR, 'ipc', input.groupFolder);

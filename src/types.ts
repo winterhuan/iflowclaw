@@ -93,3 +93,21 @@ export interface AgentProcess {
 export interface AgentConfig {
   timeout?: number;
 }
+
+// --- Memory types ---
+
+export type MemoryCategory = 'fact' | 'preference' | 'decision' | 'task' | 'summary' | 'context';
+
+export interface Memory {
+  id: string;
+  group_folder: string;
+  session_id?: string;
+  category: MemoryCategory;
+  key: string;
+  value: string;
+  importance: number;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string;
+  metadata?: string;
+}
