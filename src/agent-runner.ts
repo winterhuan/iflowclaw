@@ -21,7 +21,6 @@ import { getMemoryContext } from './memory.js';
 import { saveConversationHistory, type ConversationMessage } from './session-history.js';
 import { generateSummaryAsync } from './summary-generator.js';
 import { incrementMessageCount, getSessionStats } from './db.js';
-import { saveMemory } from './db.js';
 const IPC_POLL_MS = 500;
 
 // Group-level client cache for persistent connections
@@ -275,6 +274,7 @@ function buildIFlowOptions(
   const projectRoot = path.dirname(__dirname); // dist -> project root
   const srcDir = path.join(projectRoot, 'src');
   const options: IFlowOptions = {
+    transportMode: 'stdio', // Use stdio transport for lower latency
     logLevel: "DEBUG",
     cwd: groupDir,
     autoStartProcess: true,
@@ -427,6 +427,8 @@ export async function runAgentDirect(
       let messageCount = 0;
       let resultText = '';
 
+      let askUserQuestionsRequestId: number | string | undefined;
+
       for await (const message of client.receiveMessages()) {
         messageCount++;
         log(`Received message #${messageCount}: type=${message.type}`);
@@ -440,6 +442,39 @@ export async function runAgentDirect(
           const toolName = (message as any).toolName || (message as any).tool_name || 'unknown';
           const toolLabel = (message as any).label || 'no label';
           log(`Tool call: ${toolName}, label: ${toolLabel}, content: ${JSON.stringify(message).substring(0, 200)}`);
+        } else if (message.type === MessageType.ASK_USER_QUESTIONS) {
+          // Agent is asking user questions - need to wait for user response
+          const askMsg = message as { requestId?: number | string; questions?: Array<{ question: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }> };
+          askUserQuestionsRequestId = askMsg.requestId;
+
+          if (askMsg.questions && askMsg.questions.length > 0) {
+            // Format questions for the user
+            let questionText = '\n\n**请回答以下问题：**\n\n';
+            askMsg.questions.forEach((q, idx) => {
+              questionText += `${idx + 1}. ${q.question}\n`;
+              if (q.options && q.options.length > 0) {
+                q.options.forEach((opt, optIdx) => {
+                  questionText += `   ${String.fromCharCode(65 + optIdx)}. ${opt.label}`;
+                  if (opt.description) {
+                    questionText += ` - ${opt.description}`;
+                  }
+                  questionText += '\n';
+                });
+                if (q.multiSelect) {
+                  questionText += '   (可多选)\n';
+                }
+              }
+              questionText += '\n';
+            });
+            questionText += '请直接回复你的答案...';
+
+            resultText += questionText;
+            hasOutput = true;
+            log(`Ask user questions with ${askMsg.questions.length} questions`);
+          }
+
+          // Break to send questions to user and wait for response
+          break;
         } else if (message.type === MessageType.TASK_FINISH) {
           log('Task finished!');
           break;
@@ -483,6 +518,38 @@ export async function runAgentDirect(
       if (nextMessage === null) {
         log('Close received, exiting');
         break;
+      }
+
+      // If we have a pending ask_user_questions request, respond to it
+      if (askUserQuestionsRequestId !== undefined) {
+        log(`Responding to ask_user_questions request ${askUserQuestionsRequestId} with user answer`);
+        // Parse user answer - simple approach: treat the whole message as answer to first question
+        // or try to parse numbered answers
+        const answers: Record<string, string | string[]> = {};
+        const lines = nextMessage.split('\n').filter(l => l.trim());
+
+        // Try to parse answers like "1. A" or "1: A" or just "A"
+        lines.forEach((line, idx) => {
+          const match = line.match(/^\d+[.:\s]+(.+)$/);
+          if (match) {
+            answers[`question_${idx}`] = match[1].trim();
+          } else if (idx === 0 && lines.length === 1) {
+            // Single line answer - use as answer to first question
+            answers['question_0'] = line.trim();
+          } else {
+            answers[`question_${idx}`] = line.trim();
+          }
+        });
+
+        // If no answers parsed, use the whole message as answer to first question
+        if (Object.keys(answers).length === 0) {
+          answers['question_0'] = nextMessage.trim();
+        }
+
+        await client.respondToAskUserQuestions(answers);
+        askUserQuestionsRequestId = undefined; // Reset
+        // Continue loop to receive more messages from SDK
+        continue;
       }
 
       log(`Got new message (${nextMessage.length} chars), continuing...`);

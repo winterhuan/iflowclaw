@@ -7,9 +7,14 @@ import {
   listMemories,
   saveMemory,
   searchMemories,
+  saveMemoryWithEmbedding,
+  findSimilarMemory,
+  searchMemoriesSemantic,
+  isSemanticSearchAvailable,
   type Memory,
   type MemoryCategory,
 } from './db.js';
+import { getEmbedding, isEmbeddingEnabled } from './embeddings.js';
 import { logger } from './logger.js';
 
 /**
@@ -20,14 +25,23 @@ export function getMemoryContext(
   groupFolder: string,
   limit: number = 10,
 ): string {
+  logger.debug({ groupFolder, limit }, 'Getting memory context for prompt');
+
   try {
     const memories = getHighImportanceMemories(groupFolder, 4, limit);
 
     if (memories.length === 0) {
+      logger.debug({ groupFolder }, 'No high importance memories found for context');
       return '';
     }
 
-    return formatMemoriesForPrompt(memories);
+    const context = formatMemoriesForPrompt(memories);
+    logger.info(
+      { groupFolder, memoryCount: memories.length, contextLength: context.length },
+      'Memory context generated successfully'
+    );
+
+    return context;
   } catch (err) {
     logger.error({ groupFolder, err }, 'Failed to get memory context');
     return '';
@@ -92,7 +106,12 @@ export function saveMemoryWithAutoKey(
     ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
     : undefined;
 
-  return saveMemory({
+  logger.debug(
+    { groupFolder, category, key: finalKey, hasCustomKey: !!key, importance, expiresInDays },
+    'Saving memory with auto key'
+  );
+
+  const id = saveMemory({
     group_folder: groupFolder,
     category,
     key: finalKey,
@@ -100,6 +119,125 @@ export function saveMemoryWithAutoKey(
     importance: importance ?? 3,
     expires_at: expiresAt,
   });
+
+  logger.info(
+    { groupFolder, category, key: finalKey, id },
+    'Memory saved with auto key'
+  );
+
+  return id;
+}
+
+/**
+ * Smart memory save with semantic deduplication
+ * Automatically detects similar memories and updates instead of creating duplicates
+ */
+export async function saveMemorySmart(
+  groupFolder: string,
+  category: MemoryCategory,
+  value: string,
+  key?: string,
+  importance?: number,
+  expiresInDays?: number,
+): Promise<string> {
+  // Check if semantic search is available
+  if (!isEmbeddingEnabled() || !isSemanticSearchAvailable()) {
+    logger.debug('Semantic search not available, falling back to regular save');
+    return saveMemoryWithAutoKey(groupFolder, category, value, key, importance, expiresInDays);
+  }
+
+  logger.debug({ groupFolder, category, hasCustomKey: !!key }, 'Saving memory with semantic deduplication');
+
+  try {
+    // Get embedding for the new memory
+    const embedding = await getEmbedding(value);
+
+    // Check for similar existing memory
+    const similar = findSimilarMemory(groupFolder, embedding, 0.9);
+
+    if (similar) {
+      logger.info({ 
+        groupFolder, 
+        similarId: similar.id, 
+        similarity: similar.similarity,
+        key: similar.key 
+      }, 'Similar memory found, updating existing');
+
+      // Update existing memory with new value
+      const expiresAt = expiresInDays
+        ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
+        : undefined;
+
+      return saveMemoryWithEmbedding(
+        {
+          id: similar.id,
+          group_folder: groupFolder,
+          category,
+          key: similar.key,
+          value,  // Update with new value
+          importance: importance ?? 3,
+          expires_at: expiresAt,
+        },
+        embedding
+      );
+    }
+
+    // No similar memory found, create new
+    const finalKey = key || generateMemoryKey(category, value);
+    const expiresAt = expiresInDays
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
+      : undefined;
+
+    const id = saveMemoryWithEmbedding(
+      {
+        group_folder: groupFolder,
+        category,
+        key: finalKey,
+        value,
+        importance: importance ?? 3,
+        expires_at: expiresAt,
+      },
+      embedding
+    );
+
+    logger.info({ groupFolder, category, key: finalKey, id }, 'New memory saved with embedding');
+    return id;
+
+  } catch (err) {
+    logger.error({ groupFolder, category, err }, 'Failed to save memory with semantic deduplication, falling back');
+    return saveMemoryWithAutoKey(groupFolder, category, value, key, importance, expiresInDays);
+  }
+}
+
+/**
+ * Search memories using semantic similarity
+ * Falls back to keyword search if semantic search is not available
+ */
+export async function searchMemoriesSemanticOrKeyword(
+  groupFolder: string,
+  query: string,
+  category?: string,
+  limit: number = 5,
+): Promise<Array<Memory & { similarity?: number }>> {
+  // Try semantic search first
+  if (isEmbeddingEnabled() && isSemanticSearchAvailable()) {
+    try {
+      logger.debug({ groupFolder, query }, 'Attempting semantic search');
+      const embedding = await getEmbedding(query);
+      const results = searchMemoriesSemantic(groupFolder, embedding, limit);
+      
+      if (results.length > 0) {
+        logger.info({ groupFolder, query, resultCount: results.length }, 'Semantic search successful');
+        return results;
+      }
+    } catch (err) {
+      logger.warn({ groupFolder, query, err }, 'Semantic search failed, falling back to keyword');
+    }
+  }
+
+  // Fallback to keyword search
+  logger.debug({ groupFolder, query }, 'Using keyword search');
+  return searchMemories(groupFolder, query, category, limit);
 }
 
 /**
@@ -111,9 +249,12 @@ export function searchAndFormatMemories(
   category?: string,
   limit: number = 5,
 ): string {
+  logger.debug({ groupFolder, query, category, limit }, 'Searching and formatting memories');
+
   const memories = searchMemories(groupFolder, query, category, limit);
 
   if (memories.length === 0) {
+    logger.info({ groupFolder, query }, 'No memories found for search query');
     return '没有找到相关记忆。';
   }
 
@@ -125,7 +266,13 @@ export function searchAndFormatMemories(
     lines.push(`- [${mem.category}] ${mem.key}: ${mem.value}`);
   }
 
-  return lines.join('\n');
+  const result = lines.join('\n');
+  logger.info(
+    { groupFolder, query, resultCount: memories.length, resultLength: result.length },
+    'Search results formatted'
+  );
+
+  return result;
 }
 
 /**
@@ -136,9 +283,12 @@ export function listAndFormatMemories(
   category?: string,
   limit: number = 20,
 ): string {
+  logger.debug({ groupFolder, category, limit }, 'Listing and formatting memories');
+
   const memories = listMemories(groupFolder, category, limit);
 
   if (memories.length === 0) {
+    logger.info({ groupFolder, category }, 'No memories found for list query');
     return category
       ? `该群组没有类别为 "${category}" 的记忆。`
       : '该群组没有保存任何记忆。';
@@ -165,7 +315,13 @@ export function listAndFormatMemories(
     lines.push('');
   }
 
-  return lines.join('\n');
+  const result = lines.join('\n');
+  logger.info(
+    { groupFolder, category, resultCount: memories.length, resultLength: result.length },
+    'Memory list formatted'
+  );
+
+  return result;
 }
 
 /**
@@ -188,9 +344,12 @@ export function buildSystemPromptWithMemory(
   basePrompt: string,
   groupFolder: string,
 ): string {
+  logger.debug({ groupFolder, basePromptLength: basePrompt.length }, 'Building system prompt with memory');
+
   const memoryContext = getMemoryContext(groupFolder, 10);
 
   if (!memoryContext) {
+    logger.info({ groupFolder }, 'No memory context, using base prompt only');
     return basePrompt;
   }
 
@@ -199,5 +358,11 @@ export function buildSystemPromptWithMemory(
   parts.push('');
   parts.push(memoryContext);
 
-  return parts.join('\n');
+  const result = parts.join('\n');
+  logger.info(
+    { groupFolder, basePromptLength: basePrompt.length, finalPromptLength: result.length, memoryContextLength: memoryContext.length },
+    'System prompt built with memory context'
+  );
+
+  return result;
 }

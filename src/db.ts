@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import * as sqliteVec from 'sqlite-vec';
 
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -176,6 +177,20 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
     CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at);
   `);
+
+  // Create virtual table for vector search using sqlite-vec
+  // bge-m3 model produces 1024-dimensional embeddings
+  try {
+    database.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+        memory_id TEXT PRIMARY KEY,
+        embedding FLOAT[1024]
+      )
+    `);
+    logger.debug('sqlite-vec memory_vectors table created/verified');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to create memory_vectors virtual table, semantic search will be disabled');
+  }
 }
 
 export function initDatabase(): void {
@@ -183,6 +198,15 @@ export function initDatabase(): void {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   db = new Database(dbPath);
+
+  // Load sqlite-vec extension for vector search
+  try {
+    sqliteVec.load(db);
+    logger.debug('sqlite-vec extension loaded successfully');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to load sqlite-vec extension, semantic search will be disabled');
+  }
+
   createSchema(db);
 
   // Migrate from JSON files if they exist
@@ -192,6 +216,14 @@ export function initDatabase(): void {
 /** @internal - for tests only. Creates a fresh in-memory database. */
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
+
+  // Load sqlite-vec extension for vector search
+  try {
+    sqliteVec.load(db);
+  } catch {
+    // Ignore extension load errors in tests
+  }
+
   createSchema(db);
 }
 
@@ -862,6 +894,11 @@ export function saveMemory(
   const id = memory.id || `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const now = new Date().toISOString();
 
+  logger.debug(
+    { groupFolder: memory.group_folder, category: memory.category, key: memory.key, importance: memory.importance },
+    'Saving memory'
+  );
+
   db.prepare(
     `INSERT OR REPLACE INTO memories 
      (id, group_folder, session_id, category, key, value, importance, created_at, updated_at, expires_at, metadata)
@@ -880,6 +917,11 @@ export function saveMemory(
     memory.metadata || null,
   );
 
+  logger.info(
+    { groupFolder: memory.group_folder, category: memory.category, key: memory.key, id },
+    'Memory saved successfully'
+  );
+
   return id;
 }
 
@@ -887,9 +929,18 @@ export function getMemory(
   groupFolder: string,
   key: string,
 ): Memory | undefined {
+  logger.debug({ groupFolder, key }, 'Getting memory');
+
   const row = db
     .prepare('SELECT * FROM memories WHERE group_folder = ? AND key = ?')
     .get(groupFolder, key) as Memory | undefined;
+
+  if (row) {
+    logger.debug({ groupFolder, key, category: row.category }, 'Memory found');
+  } else {
+    logger.debug({ groupFolder, key }, 'Memory not found');
+  }
+
   return row;
 }
 
@@ -899,6 +950,8 @@ export function searchMemories(
   category?: string,
   limit: number = 10,
 ): Memory[] {
+  logger.debug({ groupFolder, query, category, limit }, 'Searching memories');
+
   let sql = `
     SELECT * FROM memories 
     WHERE group_folder = ? 
@@ -915,7 +968,10 @@ export function searchMemories(
   sql += ' ORDER BY importance DESC, updated_at DESC LIMIT ?';
   params.push(limit);
 
-  return db.prepare(sql).all(...params) as Memory[];
+  const results = db.prepare(sql).all(...params) as Memory[];
+  logger.info({ groupFolder, query, category, resultCount: results.length }, 'Memory search completed');
+
+  return results;
 }
 
 export function listMemories(
@@ -923,6 +979,8 @@ export function listMemories(
   category?: string,
   limit: number = 20,
 ): Memory[] {
+  logger.debug({ groupFolder, category, limit }, 'Listing memories');
+
   let sql = `
     SELECT * FROM memories 
     WHERE group_folder = ? 
@@ -938,21 +996,42 @@ export function listMemories(
   sql += ' ORDER BY importance DESC, updated_at DESC LIMIT ?';
   params.push(limit);
 
-  return db.prepare(sql).all(...params) as Memory[];
+  const results = db.prepare(sql).all(...params) as Memory[];
+  logger.info({ groupFolder, category, resultCount: results.length }, 'Memory list retrieved');
+
+  return results;
 }
 
 export function deleteMemory(groupFolder: string, key: string): boolean {
+  logger.debug({ groupFolder, key }, 'Deleting memory');
+
   const result = db
     .prepare('DELETE FROM memories WHERE group_folder = ? AND key = ?')
     .run(groupFolder, key);
-  return result.changes > 0;
+
+  const deleted = result.changes > 0;
+  if (deleted) {
+    logger.info({ groupFolder, key }, 'Memory deleted successfully');
+  } else {
+    logger.warn({ groupFolder, key }, 'Memory not found for deletion');
+  }
+
+  return deleted;
 }
 
 export function cleanupExpiredMemories(): number {
   const result = db
     .prepare('DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?')
     .run(new Date().toISOString());
-  return result.changes;
+
+  const count = result.changes;
+  if (count > 0) {
+    logger.info({ count }, 'Cleaned up expired memories');
+  } else {
+    logger.debug('No expired memories to clean up');
+  }
+
+  return count;
 }
 
 export function getHighImportanceMemories(
@@ -960,7 +1039,9 @@ export function getHighImportanceMemories(
   minImportance: number = 4,
   limit: number = 10,
 ): Memory[] {
-  return db
+  logger.debug({ groupFolder, minImportance, limit }, 'Getting high importance memories');
+
+  const results = db
     .prepare(
       `SELECT * FROM memories 
        WHERE group_folder = ? 
@@ -970,6 +1051,175 @@ export function getHighImportanceMemories(
        LIMIT ?`,
     )
     .all(groupFolder, minImportance, new Date().toISOString(), limit) as Memory[];
+
+  logger.debug({ groupFolder, minImportance, resultCount: results.length }, 'High importance memories retrieved');
+
+  return results;
+}
+
+// --- Semantic search with sqlite-vec ---
+
+export interface SemanticSearchResult extends Memory {
+  similarity: number;
+}
+
+/**
+ * Search memories using semantic similarity (vector search)
+ * Requires sqlite-vec extension to be loaded
+ */
+export function searchMemoriesSemantic(
+  groupFolder: string,
+  embedding: number[],
+  limit: number = 5,
+): SemanticSearchResult[] {
+  logger.debug({ groupFolder, embeddingLength: embedding.length, limit }, 'Searching memories semantically');
+
+  try {
+    const results = db
+      .prepare(
+        `SELECT 
+          m.*,
+          vec_distance_cosine(v.embedding, vec_f32(?)) as similarity
+        FROM memories m
+        JOIN memory_vectors v ON m.id = v.memory_id
+        WHERE m.group_folder = ?
+          AND (m.expires_at IS NULL OR m.expires_at > ?)
+        ORDER BY similarity
+        LIMIT ?`,
+      )
+      .all(JSON.stringify(embedding), groupFolder, new Date().toISOString(), limit) as SemanticSearchResult[];
+
+    logger.info({ groupFolder, resultCount: results.length }, 'Semantic search completed');
+    return results;
+  } catch (err) {
+    logger.error({ groupFolder, err }, 'Semantic search failed, falling back to keyword search');
+    return [];
+  }
+}
+
+/**
+ * Save memory with its vector embedding
+ * Uses transaction to ensure both tables are updated atomically
+ */
+export function saveMemoryWithEmbedding(
+  memory: Omit<Memory, 'id' | 'created_at' | 'updated_at'> & { id?: string; created_at?: string },
+  embedding: number[],
+): string {
+  const id = memory.id || `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const now = new Date().toISOString();
+
+  logger.debug(
+    { groupFolder: memory.group_folder, category: memory.category, key: memory.key, hasEmbedding: true },
+    'Saving memory with embedding'
+  );
+
+  const insertMemory = db.prepare(
+    `INSERT OR REPLACE INTO memories 
+     (id, group_folder, session_id, category, key, value, importance, created_at, updated_at, expires_at, metadata)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const insertVector = db.prepare(
+    `INSERT OR REPLACE INTO memory_vectors (memory_id, embedding)
+     VALUES (?, vec_f32(?))`
+  );
+
+  db.transaction(() => {
+    insertMemory.run(
+      id,
+      memory.group_folder,
+      memory.session_id || null,
+      memory.category,
+      memory.key,
+      memory.value,
+      memory.importance ?? 3,
+      memory.created_at || now,
+      now,
+      memory.expires_at || null,
+      memory.metadata || null,
+    );
+
+    insertVector.run(id, JSON.stringify(embedding));
+  })();
+
+  logger.info({ groupFolder: memory.group_folder, category: memory.category, key: memory.key, id }, 'Memory with embedding saved successfully');
+
+  return id;
+}
+
+/**
+ * Find similar memories by vector similarity
+ * Returns the most similar memory and its similarity score
+ */
+export function findSimilarMemory(
+  groupFolder: string,
+  embedding: number[],
+  threshold: number = 0.9,
+): { id: string; similarity: number; key: string; value: string } | undefined {
+  try {
+    const result = db
+      .prepare(
+        `SELECT 
+          m.id,
+          m.key,
+          m.value,
+          vec_distance_cosine(v.embedding, vec_f32(?)) as similarity
+        FROM memories m
+        JOIN memory_vectors v ON m.id = v.memory_id
+        WHERE m.group_folder = ?
+          AND (m.expires_at IS NULL OR m.expires_at > ?)
+        ORDER BY similarity
+        LIMIT 1`,
+      )
+      .get(JSON.stringify(embedding), groupFolder, new Date().toISOString()) as
+      { id: string; key: string; value: string; similarity: number } | undefined;
+
+    if (result && result.similarity <= threshold) {
+      logger.debug({ groupFolder, similarId: result.id, similarity: result.similarity }, 'Similar memory found');
+      return result;
+    }
+
+    return undefined;
+  } catch (err) {
+    logger.error({ groupFolder, err }, 'Failed to find similar memory');
+    return undefined;
+  }
+}
+
+/**
+ * Delete memory and its vector
+ */
+export function deleteMemoryWithEmbedding(groupFolder: string, key: string): boolean {
+  logger.debug({ groupFolder, key }, 'Deleting memory with embedding');
+
+  const memory = db
+    .prepare('SELECT id FROM memories WHERE group_folder = ? AND key = ?')
+    .get(groupFolder, key) as { id: string } | undefined;
+
+  if (!memory) {
+    logger.warn({ groupFolder, key }, 'Memory not found for deletion');
+    return false;
+  }
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM memory_vectors WHERE memory_id = ?').run(memory.id);
+    db.prepare('DELETE FROM memories WHERE id = ?').run(memory.id);
+  })();
+
+  logger.info({ groupFolder, key, id: memory.id }, 'Memory with embedding deleted successfully');
+  return true;
+}
+
+/**
+ * Check if sqlite-vec is available
+ */
+export function isSemanticSearchAvailable(): boolean {
+  try {
+    db.prepare('SELECT 1 FROM memory_vectors LIMIT 1').get();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Re-export types for convenience

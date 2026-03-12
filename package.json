@@ -29,13 +29,16 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@iflow-ai/iflow-cli-sdk": "^0.2.1-beta.5",
+    "@iflow-ai/iflow-cli-sdk": "0.2.2",
     "@larksuiteoapi/node-sdk": "^1.43.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^11.6.0",
     "cron-parser": "^5.5.0",
+    "dotenv": "^17.3.1",
+    "openai": "^6.27.0",
     "pino": "^9.5.0",
     "pino-pretty": "^13.0.0",
+    "sqlite-vec": "^0.1.7-alpha.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {

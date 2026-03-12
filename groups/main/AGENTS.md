@@ -200,6 +200,43 @@ update_task(task_id, prompt?, schedule_type?, schedule_value?)  # 更新任务
 
 ---
 
+## Skills（技能）
+
+本群组已配置专业 Skills，可在对话中引用以获得更专业的帮助。
+
+### 可用技能
+
+**产品与设计**
+- `@brainstorming` - 头脑风暴与创意规划
+- `@mvp-planner` - MVP 规划专家
+
+**开发与架构**
+- `@architecture` - 系统架构设计
+- `@tech-stack-advisor` - 技术栈选型顾问
+- `@api-design` - API 设计专家
+- `@database-design` - 数据库设计专家
+
+**代码质量**
+- `@code-review` - 代码审查专家
+- `@security-auditor` - 安全审计专家
+- `@debugging` - 调试专家
+- `@testing-strategies` - 测试策略专家
+
+### 使用方法
+
+在对话中直接引用技能名称（带 @ 符号）：
+
+```
+用户：帮我设计一个电商系统的数据库
+
+助手：我来使用 @database-design 技能帮你设计。
+[按照技能定义的执行流程进行]
+```
+
+技能文件位于 `.iflow/skills/` 目录，可查看详细说明。
+
+---
+
 ## 管理员权限
 
 这是**主频道**，拥有管理权限。
