@@ -1,7 +1,11 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
-import { readEnvFile } from '../env.js';
+import {
+  ASSISTANT_NAME,
+  TRIGGER_PATTERN,
+  FEISHU_APP_ID,
+  FEISHU_APP_SECRET,
+} from '../config.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
@@ -36,9 +40,13 @@ export class FeishuChannel implements Channel {
   private lastMessageTime = 0;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
+  private appId: string;
+  private appSecret: string;
 
   constructor(appId: string, appSecret: string, opts: FeishuChannelOpts) {
     this.opts = opts;
+    this.appId = appId;
+    this.appSecret = appSecret;
 
     this.client = new lark.Client({
       appId,
@@ -84,15 +92,11 @@ export class FeishuChannel implements Channel {
       if (timeSinceLastMessage > 15 * 60 * 1000) {
         logger.debug({ timeSinceLastMessage }, 'Feishu health check: verifying connection');
         try {
-          // 获取 tenant_access_token 验证连接和凭证是否有效
-          const envVars = readEnvFile(['FEISHU_APP_ID', 'FEISHU_APP_SECRET']);
-          const appId = process.env.FEISHU_APP_ID || envVars.FEISHU_APP_ID || '';
-          const appSecret = process.env.FEISHU_APP_SECRET || envVars.FEISHU_APP_SECRET || '';
-
+          // 获取 tenant_access_token 验证连接和凭证是否有效，使用保存的凭证
           const response = await this.client.auth.v3.tenantAccessToken.internal({
             data: {
-              app_id: appId,
-              app_secret: appSecret,
+              app_id: this.appId,
+              app_secret: this.appSecret,
             },
           });
           // API 调用成功即可，不检查具体返回值
@@ -128,14 +132,10 @@ export class FeishuChannel implements Channel {
       // 关闭旧连接
       this.wsClient.close({ force: true });
 
-      // 重新创建客户端
-      const envVars = readEnvFile(['FEISHU_APP_ID', 'FEISHU_APP_SECRET']);
-      const appId = process.env.FEISHU_APP_ID || envVars.FEISHU_APP_ID || '';
-      const appSecret = process.env.FEISHU_APP_SECRET || envVars.FEISHU_APP_SECRET || '';
-
+      // 重新创建客户端，使用保存的凭证
       this.wsClient = new lark.WSClient({
-        appId,
-        appSecret,
+        appId: this.appId,
+        appSecret: this.appSecret,
         domain: lark.Domain.Feishu,
         loggerLevel: lark.LoggerLevel.info,
       });
@@ -312,13 +312,9 @@ export class FeishuChannel implements Channel {
 }
 
 registerChannel('feishu', (opts: ChannelOpts) => {
-  const envVars = readEnvFile(['FEISHU_APP_ID', 'FEISHU_APP_SECRET']);
-  const appId = process.env.FEISHU_APP_ID || envVars.FEISHU_APP_ID || '';
-  const appSecret =
-    process.env.FEISHU_APP_SECRET || envVars.FEISHU_APP_SECRET || '';
-  if (!appId || !appSecret) {
+  if (!FEISHU_APP_ID || !FEISHU_APP_SECRET) {
     logger.warn('Feishu: FEISHU_APP_ID or FEISHU_APP_SECRET not set');
     return null;
   }
-  return new FeishuChannel(appId, appSecret, opts);
+  return new FeishuChannel(FEISHU_APP_ID, FEISHU_APP_SECRET, opts);
 });

@@ -229,13 +229,14 @@ function saveSummary(outputFile: string, summary: string): void {
 /**
  * Generate summary asynchronously (non-blocking)
  * This function returns immediately and generates summary in background
+ * Returns a Promise that resolves when summary generation completes (success or failure)
  */
 export function generateSummaryAsync(
   conversationFile: string,
   outputFile: string,
-): void {
-  // Run in background without awaiting
-  generateSummaryWithCLI(conversationFile, outputFile).then((success) => {
+): Promise<void> {
+  // Run in background and return promise for cleanup handling
+  return generateSummaryWithCLI(conversationFile, outputFile).then((success) => {
     if (success) {
       logger.info({ conversationFile, outputFile }, 'Summary generation completed');
     } else {

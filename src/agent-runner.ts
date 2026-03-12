@@ -34,6 +34,9 @@ interface CachedClient {
 
 const groupClients = new Map<string, CachedClient>();
 
+// Track summary generation to prevent concurrent summaries for the same group
+const generatingSummaries = new Set<string>();
+
 /**
  * Get or create cached client for a group
  */
@@ -42,9 +45,12 @@ async function getOrCreateGroupClient(
   options: any,
 ): Promise<{ client: IFlowClient; isReused: boolean }> {
   // Kill any existing MCP processes for this group to prevent leaks
+  // Use precise matching with IFLOWCLAW_GROUP_FOLDER= to avoid killing other groups' processes
   try {
     const { execSync } = await import('child_process');
-    execSync(`pkill -f "ipc-mcp-stdio.js.*${groupFolder}" 2>/dev/null || true`);
+    // Match the exact environment variable pattern: IFLOWCLAW_GROUP_FOLDER=groupFolder
+    const safeGroupFolder = groupFolder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    execSync(`pkill -f "IFLOWCLAW_GROUP_FOLDER=${safeGroupFolder}" 2>/dev/null || true`);
   } catch {}
 
   const cached = groupClients.get(groupFolder);
@@ -540,15 +546,23 @@ async function saveConversationAndSummary(
 
     // Trigger summary generation if message count exceeds threshold
     const SUMMARY_THRESHOLD = 30; // Generate summary every 30 messages
-    if (newCount >= SUMMARY_THRESHOLD && newCount % SUMMARY_THRESHOLD === 0) {
+    const summaryKey = `${groupFolder}:${sessionId}`;
+    
+    if (newCount >= SUMMARY_THRESHOLD && newCount % SUMMARY_THRESHOLD === 0 && !generatingSummaries.has(summaryKey)) {
+      generatingSummaries.add(summaryKey);
       log(`Message count (${newCount}) reached threshold, triggering summary generation`);
       
       const summaryFile = `${historyFile}.summary.json`;
-      generateSummaryAsync(historyFile, summaryFile);
+      generateSummaryAsync(historyFile, summaryFile).finally(() => {
+        generatingSummaries.delete(summaryKey);
+        log(`Summary generation completed for ${summaryKey}`);
+      });
       
       // Note: The summary will be saved as a memory by the summary generator
       // or we can add logic here to wait for it and save to memories table
       log(`Summary generation triggered: ${summaryFile}`);
+    } else if (generatingSummaries.has(summaryKey)) {
+      log(`Summary generation already in progress for ${summaryKey}, skipping`);
     }
   } catch (err) {
     log(`Error saving conversation history: ${err}`);

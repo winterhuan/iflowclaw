@@ -155,7 +155,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
             const filePath = path.join(memoriesDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              await processMemoryIpc(data, sourceGroup, deps);
+              await processMemoryIpc(data, sourceGroup, isMain, deps);
               fs.unlinkSync(filePath);
             } catch (err) {
               logger.error(
@@ -508,13 +508,9 @@ export async function processMemoryIpc(
     groupFolder?: string;
   },
   sourceGroup: string,
+  isMain: boolean,
   deps: IpcDeps,
 ): Promise<void> {
-  // Authorization: verify this group can access this memory
-  const registeredGroups = deps.registeredGroups();
-  const isMain = Object.values(registeredGroups).some(
-    (g) => g.folder === sourceGroup && g.isMain,
-  );
 
   switch (data.type) {
     case 'save_memory':
@@ -561,6 +557,7 @@ export async function processMemoryIpc(
         );
 
         // Send results back via message
+        const registeredGroups = deps.registeredGroups();
         const groupEntry = Object.entries(registeredGroups).find(
           ([, g]) => g.folder === sourceGroup,
         );
@@ -586,6 +583,7 @@ export async function processMemoryIpc(
         );
 
         // Send results back via message
+        const registeredGroups = deps.registeredGroups();
         const groupEntry = Object.entries(registeredGroups).find(
           ([, g]) => g.folder === sourceGroup,
         );

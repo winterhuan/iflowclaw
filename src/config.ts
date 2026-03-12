@@ -4,10 +4,25 @@ import path from 'path';
 import { readEnvFile } from './env.js';
 
 // Read config values from .env (falls back to process.env).
-const envConfig = readEnvFile(['ASSISTANT_NAME']);
+const envConfig = readEnvFile([
+  'ASSISTANT_NAME',
+  'FEISHU_APP_ID',
+  'FEISHU_APP_SECRET',
+  'IFLOW_BASE_URL',
+  'TZ',
+  'AGENT_TIMEOUT',
+  'IDLE_TIMEOUT',
+  'MAX_CONCURRENT_AGENTS',
+]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'iFlow';
+
+// Feishu configuration
+export const FEISHU_APP_ID =
+  process.env.FEISHU_APP_ID || envConfig.FEISHU_APP_ID || '';
+export const FEISHU_APP_SECRET =
+  process.env.FEISHU_APP_SECRET || envConfig.FEISHU_APP_SECRET || '';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 export const IPC_POLL_INTERVAL = 1000;
