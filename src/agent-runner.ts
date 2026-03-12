@@ -226,10 +226,18 @@ function buildIFlowOptions(
     parts.push('');
   }
 
-  // 2. Load global AGENTS.md as additional system context
+  // 2. Load group's own AGENTS.md (primary context)
+  const groupAgentsPath = path.join(groupDir, 'AGENTS.md');
+  if (fs.existsSync(groupAgentsPath)) {
+    parts.push(fs.readFileSync(groupAgentsPath, 'utf-8'));
+  }
+
+  // 3. Load global AGENTS.md as supplementary context (for non-main groups)
   if (!input.isMain && fs.existsSync(globalDir)) {
     const globalAgentsPath = path.join(globalDir, 'AGENTS.md');
     if (fs.existsSync(globalAgentsPath)) {
+      parts.push('');
+      parts.push('---');
       parts.push(fs.readFileSync(globalAgentsPath, 'utf-8'));
     }
   }

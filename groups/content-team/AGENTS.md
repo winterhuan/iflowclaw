@@ -19,10 +19,10 @@
 
    ```bash
    # 1. 创建项目目录
-   mkdir -p groups/content-team/<project-name>
+   mkdir <project-name>
 
    # 2. 创建基础结构
-   cd groups/content-team/<project-name>
+   cd <project-name>
    mkdir -p drafts published assets
    ```
 
@@ -64,59 +64,6 @@
 | 项目 | 说明 |
 |------|------|
 | （暂无）| 等待创建 |
-
-## 可用工具
-
-### 发送消息
-
-```
-send_message(text: "消息内容", sender?: "角色名")
-```
-
-- 可多次调用，用于进度更新或多条消息
-- `sender` 参数可选，设置后消息会以该角色名义发送
-
-### 任务调度
-
-```
-schedule_task(
-  prompt: "任务描述",
-  schedule_type: "cron" | "interval" | "once",
-  schedule_value: "调度值",
-  context_mode?: "group" | "isolated"
-)
-```
-
-**调度类型说明：**
-
-| 类型 | 格式 | 示例 |
-|------|------|------|
-| cron | cron 表达式（本地时区） | `0 9 * * *` 每天 9 点 |
-| interval | 毫秒数 | `3600000` 每小时 |
-| once | 本地时间（无 Z 后缀） | `2026-03-10T15:30:00` |
-
-**上下文模式说明：**
-
-| 模式 | 说明 | 适用场景 |
-|------|------|----------|
-| group | 使用群组对话历史 | 需要上下文的任务（如跟进讨论） |
-| isolated | 独立会话无历史 | 自包含任务（如定时报告） |
-
-### 任务管理
-
-```
-list_tasks()          # 列出所有任务
-pause_task(task_id)   # 暂停任务
-resume_task(task_id)  # 恢复任务
-cancel_task(task_id)  # 取消任务
-update_task(task_id, prompt?, schedule_type?, schedule_value?)  # 更新任务
-```
-
-## 图片理解
-
-当用户发送图片时，系统会自动解析图片内容，你可以直接回答关于图片的问题。
-
----
 
 ## 内容创作工作流程
 

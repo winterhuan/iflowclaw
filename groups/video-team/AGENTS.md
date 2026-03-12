@@ -15,41 +15,26 @@
    - 项目命名：小写字母 + 连字符，如 `peaceful-journey`、`product-intro`
    - 不要修改已有项目，除非用户明确要求
 
-2. **项目初始化步骤**：
+2. **项目初始化步骤**:
 
    ```bash
-
    # 1. 创建项目目录
-
-   mkdir -p <project-name>
-
-   
+   mkdir <project-name>
 
    # 2. 进入项目目录并初始化 npm
-
    cd <project-name> && npm init -y
 
-   
-
    # 3. 安装 Remotion 依赖
-
    npm install remotion @remotion/cli @remotion/transitions react react-dom
 
-   
-
    # 4. 安装开发依赖
-
    npm install --save-dev typescript @types/react @types/react-dom
 
-   
-
    # 5. 创建基础结构
-
    mkdir -p src public
-
    ```
 
-3. **必须创建的文件**：
+3. **必须创建的文件**:
    - `tsconfig.json` - TypeScript 配置
    - `remotion.config.ts` - Remotion 配置
    - `src/index.ts` - 入口文件
@@ -57,7 +42,7 @@
    - `src/<CompositionName>.tsx` - 视频组件
    - `public/` - 素材目录
 
-4. **package.json scripts**：
+4. **package.json scripts**:
 
    ```json
    {
@@ -139,59 +124,6 @@
 |------|------|----------|
 | `cool-video/` | 示例幻灯片项目 | 3100 |
 | `peaceful-journey/` | 平和宁静之旅 | 3102 |
-
-## 可用工具
-
-### 发送消息
-
-```
-send_message(text: "消息内容", sender?: "角色名")
-```
-
-- 可多次调用，用于进度更新或多条消息
-- `sender` 参数可选，设置后消息会以该角色名义发送
-
-### 任务调度
-
-```
-schedule_task(
-  prompt: "任务描述",
-  schedule_type: "cron" | "interval" | "once",
-  schedule_value: "调度值",
-  context_mode?: "group" | "isolated"
-)
-```
-
-**调度类型说明：**
-
-| 类型 | 格式 | 示例 |
-|------|------|------|
-| cron | cron 表达式（本地时区） | `0 9 * * *` 每天 9 点 |
-| interval | 毫秒数 | `3600000` 每小时 |
-| once | 本地时间（无 Z 后缀） | `2026-03-10T15:30:00` |
-
-**上下文模式说明：**
-
-| 模式 | 说明 | 适用场景 |
-|------|------|----------|
-| group | 使用群组对话历史 | 需要上下文的任务（如跟进讨论） |
-| isolated | 独立会话无历史 | 自包含任务（如定时报告） |
-
-### 任务管理
-
-```
-list_tasks()          # 列出所有任务
-pause_task(task_id)   # 暂停任务
-resume_task(task_id)  # 恢复任务
-cancel_task(task_id)  # 取消任务
-update_task(task_id, prompt?, schedule_type?, schedule_value?)  # 更新任务
-```
-
-## 图片理解
-
-当用户发送图片时，系统会自动解析图片内容，你可以直接回答关于图片的问题。
-
----
 
 ## 视频创作工作流程
 
