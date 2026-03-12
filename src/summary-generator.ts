@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { logger } from './logger.js';
+import { saveMemory } from './db.js';
 
 /**
  * Generate summary using iFlow CLI
@@ -186,7 +187,7 @@ function extractSummaryFromOutput(output: string): string | null {
 }
 
 /**
- * Save summary to file
+ * Save summary to file and as memory
  */
 function saveSummary(outputFile: string, summary: string): void {
   try {
@@ -196,7 +197,30 @@ function saveSummary(outputFile: string, summary: string): void {
       generatedBy: 'iflow-cli',
     };
     fs.writeFileSync(outputFile, JSON.stringify(summaryData, null, 2));
-    logger.info({ outputFile }, 'Summary saved');
+    logger.info({ outputFile }, 'Summary saved to file');
+
+    // Also save as memory for automatic context injection
+    try {
+      // Extract groupFolder from path: .../groups/<groupFolder>/conversations/...
+      const pathParts = outputFile.split(path.sep);
+      const groupsIndex = pathParts.indexOf('groups');
+      if (groupsIndex >= 0 && groupsIndex + 1 < pathParts.length) {
+        const groupFolder = pathParts[groupsIndex + 1];
+        const timestamp = new Date().toISOString().split('T')[0];
+
+        saveMemory({
+          group_folder: groupFolder,
+          category: 'summary',
+          key: `conversation_summary_${timestamp}`,
+          value: summary.substring(0, 500), // Limit to 500 chars for memory
+          importance: 4, // High importance so it's included in context
+        });
+        logger.info({ groupFolder }, 'Summary saved to memories');
+      }
+    } catch (memErr) {
+      logger.warn({ err: memErr }, 'Failed to save summary as memory');
+      // Don't throw - memory save is not critical
+    }
   } catch (err) {
     logger.error({ err, outputFile }, 'Failed to save summary');
   }

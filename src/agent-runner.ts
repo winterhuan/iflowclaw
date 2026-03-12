@@ -18,6 +18,10 @@ import { GROUPS_DIR, DATA_DIR } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { RegisteredGroup } from './types.js';
 import { getMemoryContext } from './memory.js';
+import { saveConversationHistory, type ConversationMessage } from './session-history.js';
+import { generateSummaryAsync } from './summary-generator.js';
+import { incrementMessageCount, getSessionStats } from './db.js';
+import { saveMemory } from './db.js';
 const IPC_POLL_MS = 500;
 
 // Group-level client cache for persistent connections
@@ -385,11 +389,24 @@ export async function runAgentDirect(
 
   log(`Using client for group ${group.folder}, sessionId: ${currentSessionId}, reused: ${isReused}`);
 
+  // Track conversation for history
+  const conversationMessages: ConversationMessage[] = [];
+  let totalTurns = 0;
+
   try {
     // Main loop
     let hasOutput = false;
     while (true) {
-      log(`Sending prompt (${prompt.length} chars)...`);
+      totalTurns++;
+      log(`Conversation turn ${totalTurns}, sending prompt (${prompt.length} chars)...`);
+      
+      // Record user message
+      conversationMessages.push({
+        role: 'user',
+        content: prompt,
+        timestamp: new Date().toISOString(),
+      });
+
       await client.sendMessage(prompt);
       log('Prompt sent, waiting for response...');
 
@@ -428,6 +445,15 @@ export async function runAgentDirect(
 
       log(`Response complete. Messages: ${messageCount}, Result length: ${resultText.length}`);
 
+      // Record assistant response
+      if (resultText) {
+        conversationMessages.push({
+          role: 'assistant',
+          content: resultText,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
       // Stream output to callback
       if (onOutput && resultText) {
         await onOutput({
@@ -449,6 +475,16 @@ export async function runAgentDirect(
       prompt = nextMessage;
     }
 
+    // Save conversation history and trigger summary if needed
+    if (conversationMessages.length > 0) {
+      await saveConversationAndSummary(
+        group.folder,
+        currentSessionId,
+        conversationMessages,
+        groupDir
+      );
+    }
+
     return {
       status: 'success',
       result: hasOutput ? null : 'No response generated',
@@ -466,4 +502,48 @@ export async function runAgentDirect(
     };
   }
   // Note: We don't disconnect here because client is cached for reuse
+}
+
+/**
+ * Save conversation history and trigger summary generation if needed
+ */
+async function saveConversationAndSummary(
+  groupFolder: string,
+  sessionId: string,
+  messages: ConversationMessage[],
+  groupDir: string,
+): Promise<void> {
+  if (messages.length === 0) return;
+
+  try {
+    // Update message count in session stats
+    const newCount = incrementMessageCount(groupFolder, sessionId);
+    log(`Session message count: ${newCount}`);
+
+    // Save conversation history
+    const historyFile = saveConversationHistory(groupFolder, {
+      sessionId,
+      messages,
+      startTime: messages[0]?.timestamp || new Date().toISOString(),
+      endTime: messages[messages.length - 1]?.timestamp || new Date().toISOString(),
+      messageCount: messages.length,
+    });
+    log(`Conversation history saved: ${historyFile}`);
+
+    // Trigger summary generation if message count exceeds threshold
+    const SUMMARY_THRESHOLD = 30; // Generate summary every 30 messages
+    if (newCount >= SUMMARY_THRESHOLD && newCount % SUMMARY_THRESHOLD === 0) {
+      log(`Message count (${newCount}) reached threshold, triggering summary generation`);
+      
+      const summaryFile = `${historyFile}.summary.json`;
+      generateSummaryAsync(historyFile, summaryFile);
+      
+      // Note: The summary will be saved as a memory by the summary generator
+      // or we can add logic here to wait for it and save to memories table
+      log(`Summary generation triggered: ${summaryFile}`);
+    }
+  } catch (err) {
+    log(`Error saving conversation history: ${err}`);
+    // Don't throw - conversation history is not critical
+  }
 }
