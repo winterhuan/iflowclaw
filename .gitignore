@@ -36,10 +36,12 @@ tsconfig.tsbuildinfo
 **/.iflow/*
 !**/.iflow/skills/
 
-# Groups - keep AGENTS.md and .iflow/, ignore everything else
+# Groups - keep AGENTS.md, .iflow/, and claude-mem-iflow/, ignore everything else
 # First ignore all content in group directories
 groups/*/*
 # Then exclude what we want to keep
 !groups/*/AGENTS.md
 !groups/*/.iflow
 !groups/*/.iflow/**
+!groups/*/claude-mem-iflow
+!groups/*/claude-mem-iflow/**
