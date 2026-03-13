@@ -16,12 +16,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/start-worker.js",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/start-worker.cjs",
             "timeout": 60
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/inject-context.js",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/inject-context.cjs",
             "timeout": 60
           }
         ]
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/capture-observation.js",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/capture-observation.cjs",
             "timeout": 30
           }
         ]
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/summarize-session.js",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/summarize-session.cjs",
             "timeout": 120
           }
         ]
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/session-complete.js",
+            "command": "node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/session-complete.cjs",
             "timeout": 30
           }
         ]

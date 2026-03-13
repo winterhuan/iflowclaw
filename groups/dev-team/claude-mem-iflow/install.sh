@@ -27,13 +27,13 @@ echo ""
 check_dependencies() {
     echo -e "${YELLOW}Checking dependencies...${NC}"
 
-    # Check Node.js
+    # Check Node.cjs
     if ! command -v node &> /dev/null; then
-        echo -e "${RED}Error: Node.js is not installed${NC}"
-        echo "Please install Node.js 18+ from https://nodejs.org"
+        echo -e "${RED}Error: Node.cjs is not installed${NC}"
+        echo "Please install Node.cjs 18+ from https://nodejs.org"
         exit 1
     fi
-    echo -e "${GREEN}✓ Node.js: $(node --version)${NC}"
+    echo -e "${GREEN}✓ Node.cjs: $(node --version)${NC}"
 
     # Check Bun (optional, for worker)
     if command -v bun &> /dev/null; then
@@ -91,8 +91,8 @@ install_iflow_integration() {
         echo -e "${GREEN}✓ Copied skill definitions${NC}"
     fi
 
-    # Update settings.json
-    IFLOW_SETTINGS="${IFLOW_CONFIG_DIR}/settings.json"
+    # Update settings.cjson
+    IFLOW_SETTINGS="${IFLOW_CONFIG_DIR}/settings.cjson"
 
     if [ ! -f "${IFLOW_SETTINGS}" ]; then
         mkdir -p "${IFLOW_CONFIG_DIR}"
@@ -115,27 +115,27 @@ settings.hooks.SessionEnd = settings.hooks.SessionEnd || [];
 const sessionStartHook = {
   matcher: 'startup',
   hooks: [
-    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/start-worker.js', timeout: 60 },
-    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/inject-context.js', timeout: 60 }
+    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/start-worker.cjs', timeout: 60 },
+    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/inject-context.cjs', timeout: 60 }
   ]
 };
 
 const postToolUseHook = {
   matcher: 'Edit|MultiEdit|Write|write_file|replace|run_shell_command',
   hooks: [
-    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/capture-observation.js', timeout: 30 }
+    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/capture-observation.cjs', timeout: 30 }
   ]
 };
 
 const stopHook = {
   hooks: [
-    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/summarize-session.js', timeout: 120 }
+    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/summarize-session.cjs', timeout: 120 }
   ]
 };
 
 const sessionEndHook = {
   hooks: [
-    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/session-complete.js', timeout: 30 }
+    { type: 'command', command: 'node ${CLAUDE_MEM_ROOT}/iflow-cli/hooks/session-complete.cjs', timeout: 30 }
   ]
 };
 
@@ -169,7 +169,7 @@ settings.claudeMem = {
 };
 
 fs.writeFileSync('${IFLOW_SETTINGS}', JSON.stringify(settings, null, 2));
-console.log('✓ Updated settings.json');
+console.log('✓ Updated settings.cjson');
 "
 
     echo -e "${GREEN}✓ Installed iFlow CLI integration${NC}"
@@ -240,7 +240,7 @@ show_completion() {
     echo "  3. Use @mem-search to find past work"
     echo ""
     echo -e "${BLUE}Configuration:${NC}"
-    echo "  Settings: ${IFLOW_CONFIG_DIR}/settings.json"
+    echo "  Settings: ${IFLOW_CONFIG_DIR}/settings.cjson"
     echo "  Data: ${HOME}/.claude-mem/data/"
     echo "  Web UI: http://localhost:${WORKER_PORT}"
     echo ""
