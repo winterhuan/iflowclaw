@@ -28,6 +28,34 @@ export function stripInternalTags(text: string): string {
   return text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
 }
 
+/**
+ * Strip XML message tags from formatted messages.
+ * Converts: <message sender="X" time="Y">content</message> -> [X Y]: content
+ * Used for claude-mem prompt preprocessing.
+ */
+export function stripMessageXml(formatted: string): string {
+  // Remove context header
+  let result = formatted.replace(/<context timezone="[^"]*" \/>\n?/g, '');
+  
+  // Remove outer messages tags
+  result = result.replace(/<\/?messages>\n?/g, '');
+  
+  // Convert message tags to plain text format: [sender time]: content
+  result = result.replace(
+    /<message sender="([^"]*)" time="([^"]*)">([\s\S]*?)<\/message>/g,
+    '[$1 $2]: $3'
+  );
+  
+  // Unescape XML entities
+  result = result
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"');
+  
+  return result.trim();
+}
+
 export function formatOutbound(rawText: string): string {
   const text = stripInternalTags(rawText);
   if (!text) return '';

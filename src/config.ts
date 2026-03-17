@@ -54,12 +54,8 @@ export const MAX_CONCURRENT_AGENTS = Math.max(
   parseInt(process.env.MAX_CONCURRENT_AGENTS || '5', 10) || 5,
 );
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 export const TRIGGER_PATTERN = new RegExp(
-  `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
+  `^@${ASSISTANT_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
   'i',
 );
 

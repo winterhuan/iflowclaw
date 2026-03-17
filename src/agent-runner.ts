@@ -18,6 +18,7 @@ import { logger } from './logger.js';
 import { GROUPS_DIR, DATA_DIR } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { RegisteredGroup } from './types.js';
+import { stripMessageXml } from './router.js';
 // Note: session-history, summary-generator, and session_stats removed - using Claude-Mem instead
 const IPC_POLL_MS = 500;
 
@@ -577,9 +578,10 @@ export async function runAgentDirect(
       log(`Conversation turn ${totalTurns}, sending prompt (${prompt.length} chars)...`);
 
       // Execute UserPromptSubmit hook before sending to agent
+      // Strip XML message tags for claude-mem
       await executeCustomHook('UserPromptSubmit', {
         sessionId: currentSessionId,
-        prompt,
+        prompt: stripMessageXml(prompt),
       });
 
       await client.sendMessage(prompt);

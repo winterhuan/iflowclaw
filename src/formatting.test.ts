@@ -6,6 +6,7 @@ import {
   formatMessages,
   formatOutbound,
   stripInternalTags,
+  stripMessageXml,
 } from './router.js';
 import { NewMessage } from './types.js';
 
@@ -252,5 +253,72 @@ describe('trigger gating (requiresTrigger interaction)', () => {
   it('non-main group with requiresTrigger=false always processes (no trigger needed)', () => {
     const msgs = [makeMsg({ content: 'hello no trigger' })];
     expect(shouldProcess(false, false, msgs)).toBe(true);
+  });
+});
+
+// --- stripMessageXml (for claude-mem prompt preprocessing) ---
+
+describe('stripMessageXml', () => {
+  const TZ = 'UTC';
+
+  it('converts XML message format to plain text', () => {
+    const formatted = formatMessages([makeMsg({ sender_name: 'Alice', content: 'hello' })], TZ);
+    const result = stripMessageXml(formatted);
+    expect(result).toContain('[Alice');
+    expect(result).toContain(']: hello');
+    expect(result).not.toContain('<message');
+    expect(result).not.toContain('</message>');
+  });
+
+  it('handles multiple messages', () => {
+    const msgs = [
+      makeMsg({ sender_name: 'Alice', content: 'hi', timestamp: '2024-01-01T00:00:00.000Z' }),
+      makeMsg({ sender_name: 'Bob', content: 'hey', timestamp: '2024-01-01T01:00:00.000Z' }),
+    ];
+    const formatted = formatMessages(msgs, TZ);
+    const result = stripMessageXml(formatted);
+    expect(result).toContain('[Alice');
+    expect(result).toContain(']: hi');
+    expect(result).toContain('[Bob');
+    expect(result).toContain(']: hey');
+  });
+
+  it('unescapes XML entities in content', () => {
+    const formatted = formatMessages(
+      [makeMsg({ content: 'a & b < c > d "e"' })],
+      TZ,
+    );
+    const result = stripMessageXml(formatted);
+    expect(result).toContain('a & b < c > d "e"');
+    expect(result).not.toContain('&amp;');
+  });
+
+  it('unescapes XML entities in sender name', () => {
+    const formatted = formatMessages(
+      [makeMsg({ sender_name: 'A & B <Co>' })],
+      TZ,
+    );
+    const result = stripMessageXml(formatted);
+    expect(result).toContain('[A & B <Co>');
+  });
+
+  it('removes context header', () => {
+    const formatted = formatMessages([makeMsg()], TZ);
+    const result = stripMessageXml(formatted);
+    expect(result).not.toContain('<context');
+    expect(result).not.toContain('timezone=');
+  });
+
+  it('removes outer messages tags', () => {
+    const formatted = formatMessages([makeMsg()], TZ);
+    const result = stripMessageXml(formatted);
+    expect(result).not.toContain('<messages>');
+    expect(result).not.toContain('</messages>');
+  });
+
+  it('handles empty messages', () => {
+    const formatted = formatMessages([], TZ);
+    const result = stripMessageXml(formatted);
+    expect(result).toBe('');
   });
 });

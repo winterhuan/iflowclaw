@@ -12,17 +12,6 @@ import { AvailableGroup, RegisteredGroup } from './types.js';
 
 export { AgentInput, AgentOutput };
 
-// Process tracking for queue integration
-interface ActiveAgent {
-  abort: () => void;
-  stdin?: {
-    write: (data: string) => void;
-    end: () => void;
-  };
-}
-
-const activeAgents = new Map<string, ActiveAgent>();
-
 /**
  * Run agent directly using iFlow SDK
  */
@@ -70,11 +59,6 @@ export async function runAgent(
 
   onProcess(mockProcess, agentId);
 
-  activeAgents.set(agentId, {
-    abort: () => abortController.abort(),
-    stdin: mockProcess.stdin,
-  });
-
   const timeoutMs = group.agentConfig?.timeout || AGENT_TIMEOUT;
   const timeoutId = setTimeout(() => {
     logger.warn({ group: group.name, agentId, timeoutMs }, 'Agent timeout, aborting');
@@ -101,7 +85,6 @@ export async function runAgent(
     };
   } finally {
     clearTimeout(timeoutId);
-    activeAgents.delete(agentId);
   }
 }
 

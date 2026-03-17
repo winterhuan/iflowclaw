@@ -43,7 +43,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { findChannel, formatMessages, formatOutbound, stripMessageXml } from './router.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -55,7 +55,7 @@ import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
-export { escapeXml, formatMessages } from './router.js';
+export { escapeXml, formatMessages, stripMessageXml } from './router.js';
 
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
