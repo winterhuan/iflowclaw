@@ -182,10 +182,11 @@ async function runTask(
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: AgentOutput) => {
+        // For scheduled tasks, do NOT forward result to user here.
+        // The agent should use send_message MCP tool to send messages.
+        // We only capture the result for logging purposes.
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
           scheduleClose();
         }
         if (streamedOutput.status === 'success') {

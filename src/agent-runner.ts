@@ -9,7 +9,8 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { IFlowClient, MessageType, IFlowOptions, MCPServerConfig } from '@iflow-ai/iflow-cli-sdk';
+import { IFlowClient, MessageType, IFlowOptions, MCPServerConfig, HookConfigs } from '@iflow-ai/iflow-cli-sdk';
+import os from 'os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -22,6 +23,143 @@ import { saveConversationHistory, type ConversationMessage } from './session-his
 import { generateSummaryAsync } from './summary-generator.js';
 import { incrementMessageCount, getSessionStats } from './db.js';
 const IPC_POLL_MS = 500;
+
+// Custom hook types not supported by SDK but we handle ourselves
+interface CustomHookCommand {
+  type: 'command';
+  command: string;
+  timeout?: number;
+}
+
+interface CustomHookConfig {
+  matcher?: string;
+  hooks: CustomHookCommand[];
+}
+
+interface CustomHooks {
+  SessionStart?: CustomHookConfig[];
+  UserPromptSubmit?: CustomHookConfig[];
+  SessionEnd?: CustomHookConfig[];
+}
+
+// Load custom hooks from settings.json
+let loadedCustomHooks: CustomHooks | null = null;
+
+function loadCustomHooks(): CustomHooks {
+  if (loadedCustomHooks) return loadedCustomHooks;
+
+  const settingsPath = path.join(os.homedir(), '.iflow', 'settings.json');
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      const customTypes = ['SessionStart', 'UserPromptSubmit', 'SessionEnd'];
+      const hooks: CustomHooks = {};
+      for (const type of customTypes) {
+        if (settings.hooks?.[type]) {
+          hooks[type as keyof CustomHooks] = settings.hooks[type];
+        }
+      }
+      loadedCustomHooks = hooks;
+      log(`Loaded custom hooks: ${Object.keys(hooks).join(', ')}`);
+      return hooks;
+    } catch (err) {
+      log(`Failed to load custom hooks: ${err}`);
+    }
+  }
+  return {};
+}
+
+/**
+ * Ensure worker service is running (call start command)
+ */
+async function ensureWorkerStarted(): Promise<void> {
+  const { exec } = await import('child_process');
+  const startCommand = 'node /home/maiscrm/.iflow/hooks/claude-mem/bun-runner.cjs /home/maiscrm/.iflow/hooks/claude-mem/worker-service.cjs start';
+
+  await new Promise<void>((resolve) => {
+    exec(startCommand, {
+      env: { ...process.env },
+      timeout: 30000,
+    }, (error, stdout, stderr) => {
+      if (stdout) log(`Worker start stdout: ${stdout}`);
+      if (stderr) log(`Worker start stderr: ${stderr}`);
+      // Always resolve - worker may already be running
+      resolve();
+    });
+  });
+}
+
+/**
+ * Execute a custom hook command
+ */
+async function executeCustomHook(
+  hookType: keyof CustomHooks,
+  context?: { matcher?: string; prompt?: string; sessionId?: string; stdin?: string }
+): Promise<void> {
+  const hooks = loadCustomHooks();
+  const hookConfigs = hooks[hookType];
+  if (!hookConfigs || hookConfigs.length === 0) return;
+
+  for (const config of hookConfigs) {
+    // Check matcher: if config has matcher, we must have a matching context.matcher
+    if (config.matcher) {
+      if (!context?.matcher) continue; // Skip if no matcher context provided
+      const regex = new RegExp(config.matcher, 'i');
+      if (!regex.test(context.matcher)) continue;
+    }
+
+    for (const hook of config.hooks) {
+      try {
+        log(`Executing custom hook ${hookType}: ${hook.command}`);
+        const { exec } = await import('child_process');
+        await new Promise<void>((resolve, reject) => {
+          const timeout = hook.timeout || 60;
+          // Build stdin data based on hook type
+          // All hooks expect JSON format with session_id
+          // UserPromptSubmit also includes prompt
+          let stdinData: string;
+          if (context?.stdin) {
+            stdinData = context.stdin;
+          } else if (hookType === 'UserPromptSubmit') {
+            stdinData = JSON.stringify({
+              prompt: context?.prompt || '',
+              session_id: context?.sessionId || '',
+            });
+          } else {
+            stdinData = JSON.stringify({
+              session_id: context?.sessionId || '',
+            });
+          }
+
+          exec(hook.command, {
+            env: {
+              ...process.env,
+              IFLOW_HOOK_TYPE: hookType,
+              IFLOW_SESSION_ID: context?.sessionId || '',
+              IFLOW_PROMPT: context?.prompt || '',
+            },
+            maxBuffer: 10 * 1024 * 1024,
+            timeout: timeout * 1000,
+          }, (error, stdout, stderr) => {
+            if (stdout) log(`Hook stdout: ${stdout}`);
+            if (stderr) log(`Hook stderr: ${stderr}`);
+            if (error) {
+              const details = [error.message];
+              if (stderr) details.push(`stderr: ${stderr}`);
+              if (stdout) details.push(`stdout: ${stdout}`);
+              reject(new Error(details.join(' | ')));
+            } else {
+              resolve();
+            }
+          }).stdin?.end(stdinData);
+        });
+        log(`Custom hook ${hookType} completed`);
+      } catch (err) {
+        log(`Custom hook ${hookType} failed: ${err}`);
+      }
+    }
+  }
+}
 
 // Group-level client cache for persistent connections
 interface CachedClient {
@@ -82,6 +220,10 @@ async function getOrCreateGroupClient(
     });
 
     log(`New client created and cached, sessionId: ${sessionId}`);
+
+    // Execute SessionStart hook (new session created) with matcher 'startup'
+    await executeCustomHook('SessionStart', { sessionId, matcher: 'startup' });
+
     return { client, isReused: false };
   } catch (err) {
     // Clean up on error
@@ -93,13 +235,15 @@ async function getOrCreateGroupClient(
 }
 
 /**
- * Mark client as inactive (on error)
+ * Mark client as inactive (on error) and execute SessionEnd hook
  */
-function invalidateGroupClient(groupFolder: string): void {
+async function invalidateGroupClient(groupFolder: string): Promise<void> {
   const cached = groupClients.get(groupFolder);
-  if (cached) {
+  if (cached && cached.isActive) {
     cached.isActive = false;
     log(`Client marked as inactive for group: ${groupFolder}`);
+    // Execute SessionEnd hook when client is invalidated
+    await executeCustomHook('SessionEnd', { sessionId: cached.sessionId });
   }
 }
 
@@ -116,6 +260,8 @@ export async function shutdownAllClients(): Promise<void> {
       cached.isActive = false;
       shutdownPromises.push(
         (async () => {
+          // Execute SessionEnd hook before disconnecting
+          await executeCustomHook('SessionEnd', { sessionId: cached.sessionId });
           try {
             log(`Disconnecting client for group: ${groupFolder}`);
             await cached.client.disconnect();
@@ -158,6 +304,8 @@ export async function cleanupStaleClients(maxIdleMs: number = 30 * 60 * 1000): P
     const cached = groupClients.get(groupFolder);
     if (cached) {
       cached.isActive = false;
+      // Execute SessionEnd hook before disconnecting
+      await executeCustomHook('SessionEnd', { sessionId: cached.sessionId });
       try {
         log(`Cleaning up stale client for group: ${groupFolder}`);
         await cached.client.disconnect();
@@ -273,6 +421,32 @@ function buildIFlowOptions(
   const mcpsDir = path.join(__dirname, 'mcps');
   const projectRoot = path.dirname(__dirname); // dist -> project root
   const srcDir = path.join(projectRoot, 'src');
+
+  // Read hooks from ~/.iflow/settings.json
+  // SDK only supports: PreToolUse, PostToolUse, Stop, SubagentStop, SetUpEnvironment
+  let hooks: HookConfigs | undefined;
+  const settingsPath = path.join(os.homedir(), '.iflow', 'settings.json');
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+      if (settings.hooks) {
+        const supportedTypes = ['PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'SetUpEnvironment'];
+        const filteredHooks: HookConfigs = {};
+        for (const type of supportedTypes) {
+          if (settings.hooks[type]) {
+            filteredHooks[type as keyof HookConfigs] = settings.hooks[type];
+          }
+        }
+        if (Object.keys(filteredHooks).length > 0) {
+          hooks = filteredHooks;
+          log(`Loaded hooks from settings.json: ${Object.keys(filteredHooks).join(', ')}`);
+        }
+      }
+    } catch (err) {
+      log(`Failed to read settings.json for hooks: ${err}`);
+    }
+  }
+
   const options: IFlowOptions = {
     transportMode: 'stdio', // Use stdio transport for lower latency
     logLevel: "DEBUG",
@@ -280,6 +454,7 @@ function buildIFlowOptions(
     autoStartProcess: true,
     timeout: 1800000, // 30 minute
     mcpServers: [mcpServerConfig],
+    hooks: hooks as HookConfigs,
     sessionSettings: {
       system_prompt: systemPrompt,
       permission_mode: 'yolo', // Auto-approve all tools
@@ -397,7 +572,7 @@ export async function runAgentDirect(
   let currentSessionId = client.getSessionId() || undefined;
 
   if (!currentSessionId) {
-    invalidateGroupClient(group.folder);
+    await invalidateGroupClient(group.folder);
     throw new Error('Failed to obtain session ID from SDK');
   }
 
@@ -419,6 +594,12 @@ export async function runAgentDirect(
         role: 'user',
         content: prompt,
         timestamp: new Date().toISOString(),
+      });
+
+      // Execute UserPromptSubmit hook before sending to agent
+      await executeCustomHook('UserPromptSubmit', {
+        sessionId: currentSessionId,
+        prompt,
       });
 
       await client.sendMessage(prompt);
@@ -575,7 +756,7 @@ export async function runAgentDirect(
     const errorMessage = err instanceof Error ? err.message : String(err);
     log(`Agent error: ${errorMessage}`);
     // Mark client as invalid on error so next call creates new one
-    invalidateGroupClient(group.folder);
+    await invalidateGroupClient(group.folder);
     return {
       status: 'error',
       result: null,
