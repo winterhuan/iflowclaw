@@ -13,9 +13,7 @@ const envConfig = readEnvFile([
   'AGENT_TIMEOUT',
   'IDLE_TIMEOUT',
   'MAX_CONCURRENT_AGENTS',
-  'EMBEDDING_API_KEY',
-  'EMBEDDING_BASE_URL',
-  'EMBEDDING_MODEL',
+  // Note: EMBEDDING_* vars removed - using Claude-Mem instead
 ]);
 
 export const ASSISTANT_NAME =
@@ -72,12 +70,4 @@ export const TIMEZONE =
 // iFlow API configuration
 export const IFLOW_BASE_URL = process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1';
 
-// Embedding configuration (for semantic memory)
-export const EMBEDDING_API_KEY =
-  process.env.EMBEDDING_API_KEY || envConfig.EMBEDDING_API_KEY || '';
-export const EMBEDDING_BASE_URL =
-  process.env.EMBEDDING_BASE_URL ||
-  envConfig.EMBEDDING_BASE_URL ||
-  'https://integrate.api.nvidia.com/v1';
-export const EMBEDDING_MODEL =
-  process.env.EMBEDDING_MODEL || envConfig.EMBEDDING_MODEL || 'baai/bge-m3';
+// Note: Embedding configuration removed - using Claude-Mem for semantic search

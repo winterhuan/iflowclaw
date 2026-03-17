@@ -18,10 +18,7 @@ import { logger } from './logger.js';
 import { GROUPS_DIR, DATA_DIR } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { RegisteredGroup } from './types.js';
-import { getMemoryContext } from './memory.js';
-import { saveConversationHistory, type ConversationMessage } from './session-history.js';
-import { generateSummaryAsync } from './summary-generator.js';
-import { incrementMessageCount, getSessionStats } from './db.js';
+// Note: session-history, summary-generator, and session_stats removed - using Claude-Mem instead
 const IPC_POLL_MS = 500;
 
 // Custom hook types not supported by SDK but we handle ourselves
@@ -170,9 +167,6 @@ interface CachedClient {
 }
 
 const groupClients = new Map<string, CachedClient>();
-
-// Track summary generation to prevent concurrent summaries for the same group
-const generatingSummaries = new Set<string>();
 
 /**
  * Get or create cached client for a group
@@ -355,7 +349,7 @@ function setupGroupEnvironment(group: RegisteredGroup): {
   fs.mkdirSync(path.join(ipcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(ipcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(ipcDir, 'input'), { recursive: true });
-  fs.mkdirSync(path.join(ipcDir, 'memories'), { recursive: true });
+  // Note: memories directory removed - using Claude-Mem instead
 
   return { groupDir, ipcDir };
 }
@@ -369,17 +363,11 @@ function buildIFlowOptions(
   groupDir: string,
   globalDir: string,
 ): IFlowOptions {
-  // Build system prompt with memory context
+  // Build system prompt
+  // Note: Memory context is injected by Claude-Mem via SessionStart hook
   const parts: string[] = [];
 
-  // 1. Inject high-importance memories
-  const memoryContext = getMemoryContext(input.groupFolder, 10);
-  if (memoryContext) {
-    parts.push(memoryContext);
-    parts.push('');
-  }
-
-  // 2. Load group's own AGENTS.md (primary context)
+  // 1. Load group's own AGENTS.md (primary context)
   const groupAgentsPath = path.join(groupDir, 'AGENTS.md');
   if (fs.existsSync(groupAgentsPath)) {
     parts.push(fs.readFileSync(groupAgentsPath, 'utf-8'));
@@ -578,8 +566,7 @@ export async function runAgentDirect(
 
   log(`Using client for group ${group.folder}, sessionId: ${currentSessionId}, reused: ${isReused}`);
 
-  // Track conversation for history
-  const conversationMessages: ConversationMessage[] = [];
+  // Note: Conversation tracking removed - Claude-Mem handles session history via Hooks
   let totalTurns = 0;
 
   try {
@@ -588,13 +575,6 @@ export async function runAgentDirect(
     while (true) {
       totalTurns++;
       log(`Conversation turn ${totalTurns}, sending prompt (${prompt.length} chars)...`);
-      
-      // Record user message
-      conversationMessages.push({
-        role: 'user',
-        content: prompt,
-        timestamp: new Date().toISOString(),
-      });
 
       // Execute UserPromptSubmit hook before sending to agent
       await executeCustomHook('UserPromptSubmit', {
@@ -675,15 +655,6 @@ export async function runAgentDirect(
 
       log(`Response complete. Messages: ${messageCount}, Result length: ${resultText.length}`);
 
-      // Record assistant response
-      if (resultText) {
-        conversationMessages.push({
-          role: 'assistant',
-          content: resultText,
-          timestamp: new Date().toISOString(),
-        });
-      }
-
       // Stream output to callback
       if (onOutput && resultText) {
         await onOutput({
@@ -737,15 +708,7 @@ export async function runAgentDirect(
       prompt = nextMessage;
     }
 
-    // Save conversation history and trigger summary if needed
-    if (conversationMessages.length > 0) {
-      await saveConversationAndSummary(
-        group.folder,
-        currentSessionId,
-        conversationMessages,
-        groupDir
-      );
-    }
+    // Note: Conversation history and summary handled by Claude-Mem via Hooks
 
     return {
       status: 'success',
@@ -766,54 +729,4 @@ export async function runAgentDirect(
   // Note: We don't disconnect here because client is cached for reuse
 }
 
-/**
- * Save conversation history and trigger summary generation if needed
- */
-async function saveConversationAndSummary(
-  groupFolder: string,
-  sessionId: string,
-  messages: ConversationMessage[],
-  groupDir: string,
-): Promise<void> {
-  if (messages.length === 0) return;
-
-  try {
-    // Update message count in session stats
-    const newCount = incrementMessageCount(groupFolder, sessionId);
-    log(`Session message count: ${newCount}`);
-
-    // Save conversation history
-    const historyFile = saveConversationHistory(groupFolder, {
-      sessionId,
-      messages,
-      startTime: messages[0]?.timestamp || new Date().toISOString(),
-      endTime: messages[messages.length - 1]?.timestamp || new Date().toISOString(),
-      messageCount: messages.length,
-    });
-    log(`Conversation history saved: ${historyFile}`);
-
-    // Trigger summary generation if message count exceeds threshold
-    const SUMMARY_THRESHOLD = 30; // Generate summary every 30 messages
-    const summaryKey = `${groupFolder}:${sessionId}`;
-    
-    if (newCount >= SUMMARY_THRESHOLD && newCount % SUMMARY_THRESHOLD === 0 && !generatingSummaries.has(summaryKey)) {
-      generatingSummaries.add(summaryKey);
-      log(`Message count (${newCount}) reached threshold, triggering summary generation`);
-      
-      const summaryFile = `${historyFile}.summary.json`;
-      generateSummaryAsync(historyFile, summaryFile).finally(() => {
-        generatingSummaries.delete(summaryKey);
-        log(`Summary generation completed for ${summaryKey}`);
-      });
-      
-      // Note: The summary will be saved as a memory by the summary generator
-      // or we can add logic here to wait for it and save to memories table
-      log(`Summary generation triggered: ${summaryFile}`);
-    } else if (generatingSummaries.has(summaryKey)) {
-      log(`Summary generation already in progress for ${summaryKey}, skipping`);
-    }
-  } catch (err) {
-    log(`Error saving conversation history: ${err}`);
-    // Don't throw - conversation history is not critical
-  }
-}
+// Note: saveConversationAndSummary removed - Claude-Mem handles session history via Hooks

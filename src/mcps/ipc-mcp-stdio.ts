@@ -92,7 +92,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
     schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
-    context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
+    context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history, isolated=fresh session (include context in prompt)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
   async (args) => {
@@ -300,122 +300,8 @@ server.tool(
   },
 );
 
-// IPC directory for memories
-const MEMORY_DIR = path.join(GROUP_IPC_DIR, 'memories');
-
-server.tool(
-  'save_memory',
-  `Save a memory for future reference. Memories are automatically included in future conversations when relevant.
-
-Use this to remember:
-- Important facts about the user (name, company, role)
-- User preferences (likes concise answers, prefers Chinese, etc.)
-- Decisions made during the conversation
-- Tasks or follow-ups to remember
-- Context about ongoing projects
-
-Examples:
-- save_memory(key: "user_name", value: "张三", category: "fact")
-- save_memory(key: "code_style", value: " prefers TypeScript with strict types", category: "preference")
-- save_memory(key: "decision_auth", value: "Use OAuth2 for authentication", category: "decision", importance: 5)`,
-  {
-    key: z.string().describe('Unique identifier for this memory (e.g., "user_name", "project_goal"). Use lowercase with underscores.'),
-    value: z.string().describe('The content to remember. Keep it concise but complete.'),
-    category: z.enum(['fact', 'preference', 'decision', 'task', 'summary', 'context']).describe('Type of memory: fact=user info, preference=user likes/dislikes, decision=important choices made, task=todo items, summary=conversation summary, context=project state'),
-    importance: z.number().min(1).max(5).optional().describe('Importance level 1-5. Higher importance memories are more likely to be included in context. Default: 3'),
-    expires_in_days: z.number().min(1).optional().describe('Optional: memory will expire after this many days. Use for temporary information.'),
-  },
-  async (args) => {
-    const data = {
-      type: 'save_memory',
-      key: args.key,
-      value: args.value,
-      category: args.category,
-      importance: args.importance ?? 3,
-      expires_in_days: args.expires_in_days,
-      groupFolder,
-      timestamp: new Date().toISOString(),
-    };
-
-    writeIpcFile(MEMORY_DIR, data);
-
-    return {
-      content: [{ type: 'text' as const, text: `Memory "${args.key}" saved.` }],
-    };
-  },
-);
-
-server.tool(
-  'search_memory',
-  'Search saved memories by keyword or category. Returns relevant memories sorted by importance.',
-  {
-    query: z.string().describe('Search keyword to find in memory keys or values'),
-    category: z.enum(['fact', 'preference', 'decision', 'task', 'summary', 'context']).optional().describe('Optional: filter by memory category'),
-    limit: z.number().min(1).max(50).optional().describe('Maximum number of results to return. Default: 10'),
-  },
-  async (args) => {
-    const data = {
-      type: 'search_memory',
-      query: args.query,
-      category: args.category,
-      limit: args.limit ?? 10,
-      groupFolder,
-      timestamp: new Date().toISOString(),
-    };
-
-    writeIpcFile(MEMORY_DIR, data);
-
-    return {
-      content: [{ type: 'text' as const, text: `Searching memories for "${args.query}"...` }],
-    };
-  },
-);
-
-server.tool(
-  'list_memories',
-  'List all saved memories for the current group. Optionally filter by category.',
-  {
-    category: z.enum(['fact', 'preference', 'decision', 'task', 'summary', 'context']).optional().describe('Optional: filter by memory category'),
-    limit: z.number().min(1).max(100).optional().describe('Maximum number of memories to return. Default: 20'),
-  },
-  async (args) => {
-    const data = {
-      type: 'list_memories',
-      category: args.category,
-      limit: args.limit ?? 20,
-      groupFolder,
-      timestamp: new Date().toISOString(),
-    };
-
-    writeIpcFile(MEMORY_DIR, data);
-
-    return {
-      content: [{ type: 'text' as const, text: 'Fetching memories...' }],
-    };
-  },
-);
-
-server.tool(
-  'delete_memory',
-  'Delete a saved memory by its key.',
-  {
-    key: z.string().describe('The key of the memory to delete'),
-  },
-  async (args) => {
-    const data = {
-      type: 'delete_memory',
-      key: args.key,
-      groupFolder,
-      timestamp: new Date().toISOString(),
-    };
-
-    writeIpcFile(MEMORY_DIR, data);
-
-    return {
-      content: [{ type: 'text' as const, text: `Memory "${args.key}" deletion requested.` }],
-    };
-  },
-);
+// Note: Memory tools removed - using Claude-Mem instead
+// Claude-Mem provides memory functionality via Hooks and Skills
 
 server.tool(
   'register_group',
