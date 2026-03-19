@@ -21,9 +21,11 @@ type ExecutionMode = 'direct' | 'container' | 'auto';
 
 /**
  * Get execution mode for a group
+ * - Main group: defaults to 'direct' (host machine)
+ * - Other groups: defaults to 'container' (Docker sandbox)
  */
 function getExecutionMode(group: RegisteredGroup): ExecutionMode {
-  // 1. Check group config
+  // 1. Check group config (highest priority)
   if (group.agentConfig?.executionMode) {
     return group.agentConfig.executionMode as ExecutionMode;
   }
@@ -32,8 +34,10 @@ function getExecutionMode(group: RegisteredGroup): ExecutionMode {
   const envMode = process.env.IFLOW_DEFAULT_EXECUTION_MODE as ExecutionMode;
   if (envMode) return envMode;
 
-  // 3. Default: auto (use container if available, otherwise direct)
-  return 'auto';
+  // 3. Default based on group type
+  // Main group -> direct (host machine, no sandbox)
+  // Other groups -> container (Docker sandbox for isolation)
+  return group.isMain ? 'direct' : 'container';
 }
 
 /**
