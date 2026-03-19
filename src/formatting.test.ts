@@ -6,8 +6,8 @@ import {
   formatMessages,
   formatOutbound,
   stripInternalTags,
-  stripMessageXml,
 } from './router.js';
+import { stripMessageXml } from './agents/common.js';
 import { NewMessage } from './types.js';
 
 function makeMsg(overrides: Partial<NewMessage> = {}): NewMessage {

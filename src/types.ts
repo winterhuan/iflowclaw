@@ -89,9 +89,51 @@ export interface AgentProcess {
   } | null;
 }
 
-// Agent config for timeout settings
+// Container configuration for sandboxed execution
+export interface ContainerConfig {
+  image?: string;
+  readOnlyRoot?: boolean;
+  networkMode?: 'none' | 'host' | 'bridge';
+  extraMounts?: Array<{
+    source: string;
+    target: string;
+    readOnly?: boolean;
+  }>;
+  additionalMounts?: AdditionalMount[]; // Validated mounts from allowlist
+  resources?: {
+    memory?: string;
+    cpus?: string;
+  };
+  env?: Record<string, string>;
+  timeout?: number;
+}
+
+// Additional mount for container (validated against allowlist)
+export interface AdditionalMount {
+  hostPath: string;
+  containerPath?: string; // Defaults to basename of hostPath
+  readonly?: boolean; // Default: true
+}
+
+// Allowed root for mount validation
+export interface AllowedRoot {
+  path: string;
+  allowReadWrite?: boolean; // Default: false
+  description?: string;
+}
+
+// Mount allowlist configuration
+export interface MountAllowlist {
+  allowedRoots: AllowedRoot[];
+  blockedPatterns: string[];
+  nonMainReadOnly: boolean; // Force non-main groups to read-only
+}
+
+// Agent config for timeout and execution mode
 export interface AgentConfig {
   timeout?: number;
+  executionMode?: 'direct' | 'container' | 'auto';
+  containerConfig?: ContainerConfig;
 }
 
 // Note: Memory types removed - using Claude-Mem instead

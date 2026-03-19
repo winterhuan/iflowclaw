@@ -1,319 +1,226 @@
 #!/bin/bash
-set -e
 
-# 解析符号链接的真实路径，支持 npm link 全局调用
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 PROJECT_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 PID_FILE="$PROJECT_ROOT/data/iflowclaw.pid"
 LOG_FILE="$PROJECT_ROOT/logs/iflowclaw.log"
 ENV_FILE="$PROJECT_ROOT/.env"
+STATE_FILE="$PROJECT_ROOT/data/.container_state"
+FINGERPRINT_FILES="$PROJECT_ROOT/container/Dockerfile $PROJECT_ROOT/container/entrypoint.sh $PROJECT_ROOT/package.json $PROJECT_ROOT/package-lock.json"
 
-# 检查 Node.js 版本
 check_node() {
-    if ! command -v node &> /dev/null; then
-        echo "❌ 未安装 Node.js，请安装 Node.js 20+"
+    if ! command -v node >/dev/null; then
+        echo "❌ 需要安装 Node.js 20+"
         exit 1
     fi
-    NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
-    if [ "$NODE_VERSION" -lt 20 ]; then
-        echo "❌ Node.js 版本过低 (当前: $(node -v))，需要 20+"
+    local ver=$(node -v | cut -d. -f1 | tr -d v)
+    if [ "$ver" -lt 20 ]; then
+        echo "❌ Node.js 版本需要 20+"
         exit 1
     fi
 }
 
 check_env() {
-    if [ -f "$ENV_FILE" ]; then
-        if grep -q "FEISHU_APP_ID=" "$ENV_FILE" && grep -q "FEISHU_APP_SECRET=" "$ENV_FILE"; then
-            return 0
-        fi
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "❌ 配置文件不存在，请先运行: iflowclaw setup"
+        return 1
     fi
-    return 1
+    if ! grep -q "FEISHU_APP_ID=" "$ENV_FILE" || ! grep -q "FEISHU_APP_SECRET=" "$ENV_FILE"; then
+        echo "❌ 配置不完整，请先运行: iflowclaw setup"
+        return 1
+    fi
 }
 
-setup() {
-    echo "================================"
-    echo "  iFlowClaw 配置向导"
-    echo "================================"
-    echo ""
+has_container() { command -v docker >/dev/null 2>&1 || command -v podman >/dev/null 2>&1; }
 
+image_exists() { [ -n "$(docker images -q iflow-agent:latest 2>/dev/null)" ]; }
+
+get_fingerprint() { cat $FINGERPRINT_FILES 2>/dev/null | md5sum | cut -d' ' -f1; }
+
+is_systemd() { systemctl --user list-unit-files iflowclaw.service 2>/dev/null | grep -q "iflowclaw"; }
+
+is_pm2() { command -v pm2 >/dev/null 2>&1 && pm2 describe iflowclaw >/dev/null 2>&1; }
+
+build_project() {
+    if [ -d "$PROJECT_ROOT/dist" ] && [ "$(find "$PROJECT_ROOT/src" -newer "$PROJECT_ROOT/dist" -type f 2>/dev/null | wc -l)" -eq 0 ]; then
+        return
+    fi
+    echo "🔨 构建项目..."
+    cd "$PROJECT_ROOT" && npm run build >/dev/null 2>&1 && echo "✓ 完成"
+}
+
+build_container() {
+    if ! has_container; then
+        echo "💡 无容器运行时，使用主机模式"
+        return
+    fi
+    local fp=$(get_fingerprint) last=""
+    [ -f "$STATE_FILE" ] && last=$(cat "$STATE_FILE")
+    if [ "${1:-}" != "force" ] && image_exists && [ "$fp" = "$last" ]; then
+        echo "✅ 镜像已是最新"
+        return
+    fi
+    echo "📦 构建容器镜像..."
+    cd "$PROJECT_ROOT" && bash container/build.sh latest --no-build ${1:+--no-cache} >/dev/null 2>&1
+    echo "$fp" > "$STATE_FILE" && echo "✓ 完成"
+}
+
+start_service() {
+    check_node || exit 1
+    check_env || exit 1
+    build_project
+    build_container
+    mkdir -p "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data"
+
+    if is_systemd; then
+        systemctl --user start iflowclaw
+        echo "✓ 已启动 (systemd)"
+        return
+    fi
+    if is_pm2; then
+        pm2 start iflowclaw
+        echo "✓ 已启动 (PM2)"
+        return
+    fi
+
+    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+        echo "⚠️  已在运行"
+        return
+    fi
+    
+    echo "🚀 启动 iFlowClaw..."
+    cd "$PROJECT_ROOT" && nohup node dist/index.js >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    sleep 2
+    
+    if kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+        echo "✓ 已启动 (PID: $(cat $PID_FILE))"
+        echo "  日志: tail -f $LOG_FILE"
+    else
+        echo "❌ 启动失败，请检查日志: $LOG_FILE"
+        rm -f "$PID_FILE"
+        exit 1
+    fi
+}
+
+stop_service() {
+    if is_systemd; then
+        systemctl --user stop iflowclaw
+        # 清理残留容器
+        has_container && docker rm -f $(docker ps -aq --filter "name=iflow-") 2>/dev/null || true
+        echo "✓ 已停止"
+        return
+    fi
+    if is_pm2; then
+        pm2 stop iflowclaw
+        has_container && docker rm -f $(docker ps -aq --filter "name=iflow-") 2>/dev/null || true
+        echo "✓ 已停止"
+        return
+    fi
+    if [ -f "$PID_FILE" ]; then
+        kill $(cat "$PID_FILE") 2>/dev/null
+        rm -f "$PID_FILE"
+        # 清理残留容器
+        has_container && docker rm -f $(docker ps -aq --filter "name=iflow-") 2>/dev/null || true
+        echo "✓ 已停止"
+        return
+    fi
+    local p=$(pgrep -f "node dist/index.js")
+    if [ -n "$p" ]; then
+        kill $p 2>/dev/null
+        has_container && docker rm -f $(docker ps -aq --filter "name=iflow-") 2>/dev/null || true
+        echo "✓ 已停止"
+    else
+        echo "⚠️  未运行"
+    fi
+}
+
+show_status() {
+    local status
+    if is_systemd; then
+        status=$(systemctl --user is-active iflowclaw 2>/dev/null)
+    elif is_pm2; then
+        status=$(pm2 describe iflowclaw 2>/dev/null | grep status | awk '{print $4}')
+    elif [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
+        status="运行中"
+    else
+        status="已停止"
+    fi
+    echo "服务: $status"
+    
+    local container_status
+    if has_container; then
+        if image_exists; then
+            container_status="✅ 已就绪"
+        else
+            container_status="❌ 未构建"
+        fi
+    else
+        container_status="💡 主机模式"
+    fi
+    echo "容器: $container_status"
+}
+
+run_foreground() {
+    check_node || exit 1
+    check_env || exit 1
+    mkdir -p "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data"
+    build_project
+    echo "🚀 启动 iFlowClaw (前台模式)..."
+    cd "$PROJECT_ROOT" && exec node dist/index.js
+}
+
+setup_wizard() {
     if check_env; then
         echo "⚠️  配置已存在，是否重新配置？(y/N)"
-        read -r confirm
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            echo "取消配置"
-            return 0
-        fi
+        read r
+        [[ ! "$r" =~ ^[Yy]$ ]] && return
     fi
-
-    echo "📋 飞书应用配置步骤："
-    echo ""
-    echo "  1. 访问 https://open.feishu.cn/app"
-    echo "  2. 创建企业自建应用"
-    echo "  3. 在「凭证与基础信息」获取 App ID 和 App Secret"
-    echo "  4. 在「权限管理」→「批量添加」粘贴以下权限："
-    echo ""
-    echo '     {"scopes":{"tenant":["im:message","im:message.group_at_msg:readonly","im:message.p2p_msg:readonly","im:message:readonly","im:message:send_as_bot","im:resource"],"user":[]}}'
-    echo ""
-    echo "  5. 在「应用能力」→「机器人」启用机器人"
-    echo ""
-    echo "请输入飞书应用凭证："
-    echo ""
-
-    read -p "飞书 App ID (cli_xxx): " app_id
-    if [[ ! "$app_id" =~ ^cli_ ]]; then
-        echo "⚠️  App ID 格式应为 cli_xxx"
-    fi
-    read -p "飞书 App Secret: " app_secret
-    read -p "机器人名称 (默认: iFlow): " assistant_name
-    assistant_name=${assistant_name:-iFlow}
-
+    echo "📋 飞书应用配置: https://open.feishu.cn/app"
+    read -p "App ID: " id
+    read -p "App Secret: " secret
+    read -p "机器人名称 [iFlow]: " name
     cat > "$ENV_FILE" <<EOF
-# iFlowClaw Configuration
-ASSISTANT_NAME=$assistant_name
-FEISHU_APP_ID=$app_id
-FEISHU_APP_SECRET=$app_secret
+ASSISTANT_NAME=${name:-iFlow}
+FEISHU_APP_ID=$id
+FEISHU_APP_SECRET=$secret
 LOG_LEVEL=info
 EOF
-
+    echo "✓ 配置已保存"
+    build_project
+    build_container
     echo ""
-    echo "✓ 配置已保存到 .env"
-    echo ""
-
-    # 安装依赖
-    if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
-        echo "📦 安装依赖..."
-        cd "$PROJECT_ROOT"
-        npm install
-        echo "✓ 依赖安装完成"
-        echo ""
-    fi
-
-    # 构建项目
-    echo "🔨 构建项目..."
-    cd "$PROJECT_ROOT"
-    npm run build
-    echo "✓ 构建完成"
-    echo ""
-
-    echo "================================"
-    echo "  接下来的步骤"
-    echo "================================"
-    echo ""
-    echo "  1. 运行 iFlow 认证:"
-    echo "     $ iflow login"
-    echo ""
-    echo "  2. 启动服务:"
-    echo "     $ npm start"
-    echo ""
-    echo "  3. 在飞书开放平台配置事件订阅："
-    echo "     - 选择「使用长连接接收事件」"
-    echo "     - 添加事件: im.message.receive_v1"
-    echo "     (⚠️ 必须先启动服务再配置)"
-    echo ""
-    echo "  4. 发布应用并等待审批"
-    echo ""
+    echo "下一步: iflow login && iflowclaw start"
 }
 
-start() {
-    check_node
-    
-    if ! check_env; then
-        echo "❌ 未配置，请先运行: iflowclaw setup"
-        exit 1
-    fi
-
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE" 2>/dev/null) || true
-        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-            echo "⚠️  iFlowClaw 已在运行 (PID: $PID)"
-            return 0
-        fi
-    fi
-
-    # 确保日志目录存在
-    mkdir -p "$PROJECT_ROOT/logs"
-    mkdir -p "$PROJECT_ROOT/data"
-
-    # 检查是否需要构建
-    if [ ! -d "$PROJECT_ROOT/dist" ] || [ "$(find "$PROJECT_ROOT/src" -newer "$PROJECT_ROOT/dist" -type f 2>/dev/null | wc -l)" -gt 0 ]; then
-        echo "🔨 构建项目..."
-        cd "$PROJECT_ROOT"
-        npm run build
-    fi
-
-    echo "🚀 启动 iFlowClaw..."
-    cd "$PROJECT_ROOT"
-    nohup node dist/index.js >> "$LOG_FILE" 2>&1 &
-    PID=$!
-    echo $PID > "$PID_FILE"
-
-    sleep 2
-
-    if kill -0 "$PID" 2>/dev/null; then
-        echo "✓ iFlowClaw 已启动 (PID: $PID)"
-        echo "📄 日志: $LOG_FILE"
-    else
-        echo "❌ 启动失败，请检查日志"
-        rm -f "$PID_FILE"
-        exit 1
-    fi
+setup_systemd() {
+    mkdir -p "$HOME/.config/systemd/user"
+    sed "s|{{USER}}|$(whoami)|g; s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g; s|{{IFLOWCLAW_BIN_RUN_CMD}}|$PROJECT_ROOT/bin/iflowclaw run|g" \
+        "$PROJECT_ROOT/iflowclaw.service.template" > "$HOME/.config/systemd/user/iflowclaw.service"
+    systemctl --user daemon-reload
+    echo "✓ 已安装"
+    echo "启用: systemctl --user enable --now iflowclaw"
 }
 
-# 前台运行（开发调试或 systemd 管理）
-run() {
-    check_node
-    
-    if ! check_env; then
-        echo "❌ 未配置，请先运行: iflowclaw setup"
-        exit 1
-    fi
-
-    # 确保目录存在
-    mkdir -p "$PROJECT_ROOT/logs"
-    mkdir -p "$PROJECT_ROOT/data"
-
-    # 检查是否需要构建
-    if [ ! -d "$PROJECT_ROOT/dist" ] || [ "$(find "$PROJECT_ROOT/src" -newer "$PROJECT_ROOT/dist" -type f 2>/dev/null | wc -l)" -gt 0 ]; then
-        echo "🔨 构建项目..."
-        cd "$PROJECT_ROOT"
-        npm run build
-    fi
-
-    echo "🚀 启动 iFlowClaw (前台模式)..."
-    cd "$PROJECT_ROOT"
-    exec node dist/index.js
-}
-
-stop() {
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE" 2>/dev/null) || true
-        if [ -n "$PID" ]; then
-            if kill -0 "$PID" 2>/dev/null; then
-                echo "🛑 停止 iFlowClaw (PID: $PID)..."
-                kill "$PID"
-                sleep 2
-
-                # 强制终止如果还在运行
-                if kill -0 "$PID" 2>/dev/null; then
-                    echo "⚠️  强制终止..."
-                    kill -9 "$PID" 2>/dev/null || true
-                fi
-
-                echo "✓ 已停止"
-            else
-                echo "⚠️  进程不在运行"
-            fi
-        fi
-        rm -f "$PID_FILE"
-    else
-        echo "⚠️  未找到 PID 文件，尝试查找进程..."
-        PID=$(pgrep -f "node dist/index.js" | head -1) || true
-        if [ -n "$PID" ]; then
-            echo "🛑 停止进程 (PID: $PID)..."
-            kill "$PID" 2>/dev/null || true
-            sleep 1
-            echo "✓ 已停止"
-        else
-            echo "⚠️  没有找到运行中的 iFlowClaw"
-        fi
-    fi
-}
-
-restart() {
-    echo "🔄 重启 iFlowClaw..."
-    stop
-    sleep 2
-    start
-}
-
-status() {
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE" 2>/dev/null) || true
-        if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-            echo "✅ iFlowClaw 正在运行"
-            echo "   PID: $PID"
-            echo "   日志: $LOG_FILE"
-
-            # 显示运行时间
-            if [ -f "/proc/$PID/stat" ]; then
-                START_TIME=$(ps -o lstart= -p "$PID" 2>/dev/null | awk '{print $2" "$3" "$4" "$5}') || true
-                echo "   启动时间: $START_TIME"
-            fi
-
-            # 显示日志最后几行
-            if [ -f "$LOG_FILE" ]; then
-                echo ""
-                echo "📋 最近日志:"
-                tail -n 5 "$LOG_FILE"
-            fi
-        else
-            echo "❌ iFlowClaw 未运行 (PID 文件存在但进程已退出)"
-            rm -f "$PID_FILE"
-        fi
-    else
-        # 尝试从进程查找
-        PID=$(pgrep -f "node dist/index.js" | head -1) || true
-        if [ -n "$PID" ]; then
-            echo "✅ iFlowClaw 正在运行 (PID: $PID)"
-            echo "   ⚠️  警告: PID 文件丢失"
-            echo "   日志: $LOG_FILE"
-        else
-            echo "❌ iFlowClaw 未运行"
-        fi
-    fi
-}
-
-logs() {
-    if [ -f "$LOG_FILE" ]; then
-        echo "📋 查看日志 (按 Ctrl+C 退出)..."
-        tail -f "$LOG_FILE"
-    else
-        echo "❌ 日志文件不存在: $LOG_FILE"
-    fi
-}
-
-# 主命令处理
 case "${1:-}" in
-    setup)
-        setup
-        ;;
-    start)
-        start
-        ;;
-    stop)
-        stop
-        ;;
-    restart)
-        restart
-        ;;
-    status)
-        status
-        ;;
-    logs)
-        logs
-        ;;
-    run)
-        run
-        ;;
-    *)
-        echo "iFlowClaw 管理工具"
-        echo ""
-        echo "用法: iflowclaw <命令>"
-        echo ""
-        echo "命令:"
-        echo "  setup   配置飞书应用凭证"
-        echo "  start   启动服务（后台运行）"
-        echo "  stop    停止服务"
-        echo "  restart 重启服务"
-        echo "  status  查看状态"
-        echo "  logs    查看日志"
-        echo "  run     前台运行"
-        echo ""
-        echo "快速开始:"
-        echo "  1. iflowclaw setup      # 配置飞书凭证"
-        echo "  2. iflow login          # iFlow OAuth 认证"
-        echo "  3. iflowclaw start      # 启动服务"
-        echo "  4. 配置飞书事件订阅      # WebSocket 长连接"
-        echo "  5. 发布应用"
-        ;;
+    setup)     setup_wizard ;;
+    start)     start_service ;;
+    stop)      stop_service ;;
+    restart)   stop_service; sleep 1; start_service ;;
+    status)    show_status ;;
+    logs)      tail -f "$LOG_FILE" ;;
+    run)       run_foreground ;;
+    build)     build_project; build_container ;;
+    build-image) build_container force ;;
+    setup-systemd) setup_systemd ;;
+    *) cat <<EOF
+iFlowClaw 管理工具
+
+命令: setup | start | stop | restart | status | logs | run | build | build-image | setup-systemd
+
+快速开始:
+  1. iflowclaw setup    # 配置
+  2. iflow login        # 认证
+  3. iflowclaw start    # 启动
+EOF
 esac

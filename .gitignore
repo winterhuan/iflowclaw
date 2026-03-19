@@ -24,6 +24,9 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Generated files
+iflowclaw.service
+
 # Test
 coverage/
 

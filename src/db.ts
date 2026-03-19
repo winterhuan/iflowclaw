@@ -80,7 +80,8 @@ function createSchema(database: Database.Database): void {
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       agent_config TEXT,
-      requires_trigger INTEGER DEFAULT 1
+      requires_trigger INTEGER DEFAULT 1,
+      is_main INTEGER DEFAULT 0
     );
   `);
 
@@ -573,6 +574,10 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+export function clearRegisteredGroups(): void {
+  db.prepare('DELETE FROM registered_groups').run();
 }
 
 // --- JSON migration ---

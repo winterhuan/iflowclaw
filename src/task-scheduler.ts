@@ -2,11 +2,8 @@ import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
-import {
-  AgentOutput,
-  runContainerAgent,
-  writeTasksSnapshot,
-} from './agent-utils.js';
+import { type AgentOutput, writeTasksSnapshot } from './agents/common.js';
+import { runAgent } from './agents/utils.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -168,7 +165,7 @@ async function runTask(
   };
 
   try {
-    const output = await runContainerAgent(
+    const output = await runAgent(
       group,
       {
         prompt: task.prompt,

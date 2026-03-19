@@ -11,48 +11,24 @@
 - 发送消息回聊天
 - 理解图片内容
 
+## 消息格式
+
+输出会发送给用户或群组。格式要求：
+
+- *单星号* 表示粗体（不要用 **双星号**）
+- *下划线* 表示斜体
+- • 圆点列表
+- ```代码块```
+
 ## 内部内容
 
-使用 `<internal>...</internal>` 标签包裹不想发送给用户的内容：
-
-```
-<internal>
-这部分内容不会发送给用户，用于内部思考和记录。
-</internal>
-```
+使用 `<internal>...</internal>` 标签包裹内部思考。
 
 ## 工作空间
 
-当前工作目录就是你所在群组的专属目录（读写）。直接使用相对路径保存文件即可，如 `conversations/`、`notes.md` 等。
-
-## Skills 存放策略
-
-| 层级 | 路径 | 用途 |
-|------|------|------|
-| 项目 | `.iflow/skills/` | 本项目所有群组共享 |
-| 群组 | `.iflow/skills/` | 当前群组专属 |
-
-- Skills 直接存放在对应目录
-- 群组级 skills 按需添加，仅该群组可用
-
-### 安装技能
-
-在群组目录下运行：
-
-```bash
-# 安装项目级技能（所有群组可用）
-cd ../../ && iflow skills add <skill-name>
-
-# 安装群组专属技能
-iflow skills add <skill-name>
-```
-
-查看可用技能：
-```bash
-iflow skills search
-```
-
-## 可用工具
+- 当前群组根目录: `{{GROUP_DIR}}` (用于存储当前会话、笔记和特定群组的文件)
+- 全局共享目录: `{{GLOBAL_DIR}}` (用于跨群组共享记忆、通用模板和指令)
+- 系统数据目录: `{{IPC_DIR}}` (包含 `available_groups.json`, `current_tasks.json` 等系统状态文件)
 
 ### 发送消息
 
@@ -60,186 +36,25 @@ iflow skills search
 send_message(text: "消息内容", sender?: "角色名")
 ```
 
-- 可多次调用，用于进度更新或多条消息
-- `sender` 参数可选，设置后消息会以该角色名义发送
-
-### 记忆管理
-
-你可以使用以下工具管理长期记忆。这些记忆会在后续对话中自动提供上下文。
-
-#### save_memory
-
-保存重要信息到长期记忆。
-
-```
-save_memory(
-  key: "记忆的标识符",
-  value: "记忆的内容",
-  category: "fact" | "preference" | "decision" | "task" | "summary" | "context",
-  importance?: 1-5,           // 重要性，默认3
-  expires_in_days?: number    // 可选：过期天数
-)
-```
-
-**你应该主动保存的信息：**
-
-- 用户的基本信息（姓名、公司、职位）
-- 用户明确表达的偏好（如"我喜欢简洁回答"）
-- 重要的决策或结论
-- 需要后续跟进的事项
-- 当前项目的上下文信息
-
-**示例：**
-
-```
-save_memory(
-  key: "user_name",
-  value: "张三",
-  category: "fact",
-  importance: 5
-)
-
-save_memory(
-  key: "project_goal",
-  value: "构建一个电商平台，使用 React + Node.js",
-  category: "context",
-  importance: 4
-)
-```
-
-#### search_memory
-
-搜索之前保存的记忆。
-
-```
-search_memory(
-  query: "搜索关键词",
-  category?: "fact" | "preference" | "decision" | "task" | "summary" | "context",
-  limit?: number  // 默认10
-)
-```
-
-**示例：**
-
-```
-search_memory(query: "用户")  // 搜索包含"用户"的记忆
-```
-
-#### list_memories
-
-列出所有保存的记忆。
-
-```
-list_memories(
-  category?: "fact" | "preference" | "decision" | "task" | "summary" | "context",
-  limit?: number  // 默认20
-)
-```
-
-**示例：**
-
-```
-list_memories(category: "fact")  // 列出所有事实类记忆
-list_memories()                   // 列出所有记忆
-```
-
-#### delete_memory
-
-删除一条记忆。
-
-```
-delete_memory(key: "记忆的标识符")
-```
-
-**示例：**
-
-```
-delete_memory(key: "temp_task")
-```
-
 ### 任务调度
 
 ```
-schedule_task(
-  prompt: "任务描述",
-  schedule_type: "cron" | "interval" | "once",
-  schedule_value: "调度值",
-  context_mode?: "group" | "isolated",
-  target_group_jid?: "目标群组JID"  # 仅主群可用
-)
-```
-
-**调度类型说明：**
-
-| 类型 | 格式 | 示例 |
-|------|------|------|
-| cron | cron 表达式（本地时区） | `0 9 * * *` 每天 9 点 |
-| interval | 毫秒数 | `3600000` 每小时 |
-| once | 本地时间（无 Z 后缀） | `2026-03-10T15:30:00` |
-
-**上下文模式说明：**
-
-| 模式 | 说明 | 适用场景 |
-|------|------|----------|
-| group | 使用群组对话历史 | 需要上下文的任务（如跟进讨论） |
-| isolated | 独立会话无历史 | 自包含任务（如定时报告） |
-
-### 任务管理
-
-```
-list_tasks()          # 列出所有任务（主群可看全部）
-pause_task(task_id)   # 暂停任务
-resume_task(task_id)  # 恢复任务
-cancel_task(task_id)  # 取消任务
-update_task(task_id, prompt?, schedule_type?, schedule_value?)  # 更新任务
+schedule_task(prompt, schedule_type, schedule_value, context_mode?, target_group_jid?)
+list_tasks()
+pause_task(task_id)
+resume_task(task_id)
+cancel_task(task_id)
 ```
 
 ## 图片理解
 
-当用户发送图片时，系统会自动解析图片内容，你可以直接回答关于图片的问题。
-
----
-
-## Skills（技能）
-
-本群组已配置专业 Skills，可在对话中引用以获得更专业的帮助。
-
-### 可用技能
-
-**产品与设计**
-- `@brainstorming` - 头脑风暴与创意规划
-- `@mvp-planner` - MVP 规划专家
-
-**开发与架构**
-- `@architecture` - 系统架构设计
-- `@tech-stack-advisor` - 技术栈选型顾问
-- `@api-design` - API 设计专家
-- `@database-design` - 数据库设计专家
-
-**代码质量**
-- `@code-review` - 代码审查专家
-- `@security-auditor` - 安全审计专家
-- `@debugging` - 调试专家
-- `@testing-strategies` - 测试策略专家
-
-### 使用方法
-
-在对话中直接引用技能名称（带 @ 符号）：
-
-```
-用户：帮我设计一个电商系统的数据库
-
-助手：我来使用 @database-design 技能帮你设计。
-[按照技能定义的执行流程进行]
-```
-
-技能文件位于 `.iflow/skills/` 目录，可查看详细说明。
+用户发送图片时，系统自动解析内容。
 
 ---
 
 ## 管理员权限
 
-这是**主频道**，拥有管理权限。
+这是**主群组**，拥有管理权限。
 
 ### 注册群组
 
@@ -254,15 +69,11 @@ register_group(
 )
 ```
 
-查看可注册群组：
-
-```
-Read: ../data/ipc/main/available_groups.json
-```
+查看可注册群组：读取 `{{IPC_DIR}}/available_groups.json`
 
 ### 跨群任务调度
 
-主群可以为其他群组安排任务，使用 `target_group_jid` 参数：
+主群可以为其他群组安排任务：
 
 ```
 schedule_task(
@@ -275,4 +86,4 @@ schedule_task(
 
 ### 全局记忆
 
-可以读写 `../global/AGENTS.md` 来更新所有群组的共享记忆。
+可以读写 `../global/AGENTS.md` 更新所有群组的共享记忆。

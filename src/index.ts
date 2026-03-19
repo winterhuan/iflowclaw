@@ -17,14 +17,10 @@ import {
   bootstrapExtensions,
   runAgentInputExtensions,
 } from './extensions/index.js';
-import {
-  AgentOutput,
-  runContainerAgent,
-  writeGroupsSnapshot,
-  writeTasksSnapshot,
-} from './agent-utils.js';
-import { shutdownAllClients } from './agent-runner.js';
-import { AvailableGroup } from './types.js';
+import { type AgentOutput, writeGroupsSnapshot, writeTasksSnapshot, stripMessageXml } from './agents/common.js';
+import { runAgent } from './agents/utils.js';
+import { shutdownAllClients } from './agents/runner.js';
+import { type AvailableGroup } from './types.js';
 import {
   getAllChats,
   getAllRegisteredGroups,
@@ -34,6 +30,7 @@ import {
   getNewMessages,
   getRouterState,
   initDatabase,
+  _initTestDatabase,
   setRegisteredGroup,
   setRouterState,
   setSession,
@@ -43,7 +40,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound, stripMessageXml } from './router.js';
+import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   isSenderAllowed,
   isTriggerAllowed,
@@ -55,18 +52,33 @@ import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
-export { escapeXml, formatMessages, stripMessageXml } from './router.js';
+export { escapeXml, formatMessages } from './router.js';
+export { stripMessageXml } from './agents/common.js';
+
+let messageLoopRunning = false;
+
+/** @internal - exported for testing */
+export function stopMessageLoop(): void {
+  messageLoopRunning = false;
+}
+
+/** @internal - exported for testing */
+export async function processOnce(): Promise<void> {
+  await processMissedMessages();
+}
 
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
-let messageLoopRunning = false;
 
 const channels: Channel[] = [];
+/** @internal - exported for testing */
+export const _testChannels = channels;
 const queue = new GroupQueue();
 
-function loadState(): void {
+/** @internal - exported for testing */
+export function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
   try {
@@ -247,7 +259,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(
+  const output = await runAgentWithSetup(
     group,
     draft.prompt,
     chatJid,
@@ -279,6 +291,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
       if (result.status === 'error') {
         hadError = true;
+        logger.error(
+          { group: group.name, error: result.error },
+          'Agent returned error status during streaming',
+        );
       }
     },
   );
@@ -309,7 +325,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   return true;
 }
 
-async function runAgent(
+
+async function runAgentWithSetup(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
@@ -359,7 +376,7 @@ async function runAgent(
     Object.keys(extensionInput).length > 0 ? extensionInput : undefined;
 
   try {
-    const output = await runContainerAgent(
+    const output = await runAgent(
       group,
       {
         prompt,
@@ -395,6 +412,97 @@ async function runAgent(
   }
 }
 
+/** @internal - exported for testing */
+export async function processMissedMessages(): Promise<void> {
+  try {
+    const jids = Object.keys(registeredGroups);
+    const { messages, newTimestamp } = getNewMessages(
+      jids,
+      lastTimestamp,
+      ASSISTANT_NAME,
+    );
+
+    if (messages.length > 0) {
+      logger.info({ count: messages.length }, 'New messages');
+
+      // Advance the "seen" cursor for all messages immediately
+      lastTimestamp = newTimestamp;
+      saveState();
+
+      // Deduplicate by group
+      const messagesByGroup = new Map<string, NewMessage[]>();
+      for (const msg of messages) {
+        const existing = messagesByGroup.get(msg.chat_jid);
+        if (existing) {
+          existing.push(msg);
+        } else {
+          messagesByGroup.set(msg.chat_jid, [msg]);
+        }
+      }
+
+      for (const [chatJid, groupMessages] of messagesByGroup) {
+        const group = registeredGroups[chatJid];
+        if (!group) continue;
+
+        const channel = findChannel(channels, chatJid);
+        if (!channel) {
+          logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
+          continue;
+        }
+
+        const isMainGroup = group.isMain === true;
+        const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+
+        // For non-main groups, only act on trigger messages.
+        // Non-trigger messages accumulate in DB and get pulled as
+        // context when a trigger eventually arrives.
+        if (needsTrigger) {
+          const allowlistCfg = loadSenderAllowlist();
+          const hasTrigger = groupMessages.some(
+            (m) =>
+              TRIGGER_PATTERN.test(m.content.trim()) &&
+              (m.is_from_me ||
+                isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+          );
+          if (!hasTrigger) continue;
+        }
+
+        // Pull all messages since lastAgentTimestamp so non-trigger
+        // context that accumulated between triggers is included.
+        const allPending = getMessagesSince(
+          chatJid,
+          lastAgentTimestamp[chatJid] || '',
+          ASSISTANT_NAME,
+        );
+        const messagesToSend =
+          allPending.length > 0 ? allPending : groupMessages;
+        const formatted = formatMessages(messagesToSend, TIMEZONE);
+
+        if (queue.sendMessage(chatJid, formatted)) {
+          logger.debug(
+            { chatJid, count: messagesToSend.length },
+            'Piped messages to active container',
+          );
+          lastAgentTimestamp[chatJid] =
+            messagesToSend[messagesToSend.length - 1].timestamp;
+          saveState();
+          // Show typing indicator while the container processes the piped message
+          channel
+            .setTyping?.(chatJid, true)
+            ?.catch((err) =>
+              logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
+            );
+        } else {
+          // No active container — enqueue for a new one
+          queue.enqueueMessageCheck(chatJid);
+        }
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, 'Error in message loop');
+  }
+}
+
 async function startMessageLoop(): Promise<void> {
   if (messageLoopRunning) {
     logger.debug('Message loop already running, skipping duplicate start');
@@ -404,94 +512,8 @@ async function startMessageLoop(): Promise<void> {
 
   logger.info(`iFlowClaw running (trigger: @${ASSISTANT_NAME})`);
 
-  while (true) {
-    try {
-      const jids = Object.keys(registeredGroups);
-      const { messages, newTimestamp } = getNewMessages(
-        jids,
-        lastTimestamp,
-        ASSISTANT_NAME,
-      );
-
-      if (messages.length > 0) {
-        logger.info({ count: messages.length }, 'New messages');
-
-        // Advance the "seen" cursor for all messages immediately
-        lastTimestamp = newTimestamp;
-        saveState();
-
-        // Deduplicate by group
-        const messagesByGroup = new Map<string, NewMessage[]>();
-        for (const msg of messages) {
-          const existing = messagesByGroup.get(msg.chat_jid);
-          if (existing) {
-            existing.push(msg);
-          } else {
-            messagesByGroup.set(msg.chat_jid, [msg]);
-          }
-        }
-
-        for (const [chatJid, groupMessages] of messagesByGroup) {
-          const group = registeredGroups[chatJid];
-          if (!group) continue;
-
-          const channel = findChannel(channels, chatJid);
-          if (!channel) {
-            logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
-            continue;
-          }
-
-          const isMainGroup = group.isMain === true;
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
-
-          // For non-main groups, only act on trigger messages.
-          // Non-trigger messages accumulate in DB and get pulled as
-          // context when a trigger eventually arrives.
-          if (needsTrigger) {
-            const allowlistCfg = loadSenderAllowlist();
-            const hasTrigger = groupMessages.some(
-              (m) =>
-                TRIGGER_PATTERN.test(m.content.trim()) &&
-                (m.is_from_me ||
-                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
-            );
-            if (!hasTrigger) continue;
-          }
-
-          // Pull all messages since lastAgentTimestamp so non-trigger
-          // context that accumulated between triggers is included.
-          const allPending = getMessagesSince(
-            chatJid,
-            lastAgentTimestamp[chatJid] || '',
-            ASSISTANT_NAME,
-          );
-          const messagesToSend =
-            allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend, TIMEZONE);
-
-          if (queue.sendMessage(chatJid, formatted)) {
-            logger.debug(
-              { chatJid, count: messagesToSend.length },
-              'Piped messages to active container',
-            );
-            lastAgentTimestamp[chatJid] =
-              messagesToSend[messagesToSend.length - 1].timestamp;
-            saveState();
-            // Show typing indicator while the container processes the piped message
-            channel
-              .setTyping?.(chatJid, true)
-              ?.catch((err) =>
-                logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-              );
-          } else {
-            // No active container — enqueue for a new one
-            queue.enqueueMessageCheck(chatJid);
-          }
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, 'Error in message loop');
-    }
+  while (messageLoopRunning) {
+    await processMissedMessages();
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
 }
@@ -514,6 +536,12 @@ function recoverPendingMessages(): void {
   }
 }
 
+/** @internal - for tests only */
+export function _switchToTestMode(): void {
+  _initTestDatabase();
+  queue.setProcessMessagesFn(processGroupMessages);
+}
+
 async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
@@ -524,11 +552,13 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    stopMessageLoop();
     await queue.shutdown(10000);
     // Shutdown all cached agent clients
     await shutdownAllClients();
     for (const ch of channels) await ch.disconnect();
-    process.exit(0);
+    // Allow time for the message loop to stop
+    setTimeout(() => process.exit(0), POLL_INTERVAL * 2);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

@@ -8,7 +8,6 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'FEISHU_APP_ID',
   'FEISHU_APP_SECRET',
-  'IFLOW_BASE_URL',
   'TZ',
   'AGENT_TIMEOUT',
   'IDLE_TIMEOUT',
@@ -39,9 +38,27 @@ export const SENDER_ALLOWLIST_PATH = path.join(
   'iflowclaw',
   'sender-allowlist.json',
 );
+export const MOUNT_ALLOWLIST_PATH = path.join(
+  HOME_DIR,
+  '.config',
+  'iflowclaw',
+  'mount-allowlist.json',
+);
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+
+// Container configuration
+export const CONTAINER_IMAGE =
+  process.env.IFLOW_CONTAINER_IMAGE || 'iflow-agent:latest';
+export const CONTAINER_TIMEOUT = parseInt(
+  process.env.IFLOW_CONTAINER_TIMEOUT || '1800000',
+  10,
+); // 30min default
+export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
+  process.env.IFLOW_CONTAINER_MAX_OUTPUT_SIZE || '10485760',
+  10,
+); // 10MB default
 
 // Agent timeout (how long to wait for agent response)
 export const AGENT_TIMEOUT = parseInt(
@@ -62,8 +79,5 @@ export const TRIGGER_PATTERN = new RegExp(
 // Timezone for scheduled tasks
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-// iFlow API configuration
-export const IFLOW_BASE_URL = process.env.IFLOW_BASE_URL || 'https://apis.iflow.cn/v1';
 
 // Note: Embedding configuration removed - using Claude-Mem for semantic search

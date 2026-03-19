@@ -18,7 +18,8 @@
     "logs": "bash bin/iflowclaw logs",
     "restart": "bash bin/iflowclaw restart",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "REAL_TEST=true vitest run test/integration.test.ts"
   },
   "keywords": [
     "ai",

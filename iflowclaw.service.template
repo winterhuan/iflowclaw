@@ -1,0 +1,16 @@
+[Unit]
+Description=iFlowClaw - Lightweight Personal AI Assistant
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={{PROJECT_ROOT}}
+ExecStart={{IFLOWCLAW_BIN_RUN_CMD}}
+Restart=always
+RestartSec=10
+StandardOutput=append:{{PROJECT_ROOT}}/logs/iflowclaw.log
+StandardError=append:{{PROJECT_ROOT}}/logs/iflowclaw.log
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
