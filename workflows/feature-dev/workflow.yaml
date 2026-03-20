@@ -1,0 +1,175 @@
+id: feature-dev
+name: Feature Development
+description: Plan, implement, verify, test, and review a new feature with a team of specialized agents.
+version: "1.0.0"
+
+agents:
+  - id: planner
+    name: Planner
+    groupFolder: wf-planner
+  - id: developer
+    name: Developer
+    groupFolder: wf-developer
+  - id: verifier
+    name: Verifier
+    groupFolder: wf-verifier
+  - id: tester
+    name: Tester
+    groupFolder: wf-tester
+  - id: reviewer
+    name: Reviewer
+    groupFolder: wf-reviewer
+
+steps:
+  - id: plan
+    agentId: planner
+    input: |
+      # Task
+      {{task}}
+      
+      # Your Role
+      You are the Planner. Your job is to break down the task into clear, actionable stories.
+      
+      # Instructions
+      1. Analyze the task and understand the requirements
+      2. Break down the task into 3-7 user stories
+      3. For each story, define:
+         - Clear acceptance criteria
+         - Affected files/components
+         - Dependencies on other stories
+      
+      # Output Format
+      After completing your analysis, output:
+      
+      STATUS: done
+      STORIES:
+      1. [Story title]
+         - Acceptance: [criteria]
+         - Files: [affected files]
+      2. ...
+    expects: "STATUS: done"
+    retryLimit: 2
+
+  - id: implement
+    agentId: developer
+    input: |
+      # Task
+      {{task}}
+      
+      # Plan from Planner
+      {{step:plan}}
+      
+      # Your Role
+      You are the Developer. Your job is to implement the stories defined by the Planner.
+      
+      # Instructions
+      1. Read each story carefully
+      2. Implement the code changes for each story
+      3. Ensure code follows best practices
+      4. Update any necessary documentation
+      
+      # Output Format
+      After implementing, output:
+      
+      STATUS: done
+      IMPLEMENTED:
+      - Story 1: [what was implemented]
+      - Story 2: [what was implemented]
+      ...
+    expects: "STATUS: done"
+    retryLimit: 3
+    timeout: 600000
+
+  - id: verify
+    agentId: verifier
+    input: |
+      # Task
+      {{task}}
+      
+      # Implementation from Developer
+      {{step:implement}}
+      
+      # Your Role
+      You are the Verifier. Your job is to verify that the implementation meets the acceptance criteria.
+      
+      # Instructions
+      1. Review each story's acceptance criteria
+      2. Verify the implementation matches the criteria
+      3. Check for edge cases and error handling
+      4. List any issues found
+      
+      # Output Format
+      After verification, output:
+      
+      VERIFIED: true/false
+      ISSUES: [list of issues, or "none" if verified]
+      DETAILS: [explanation]
+    expects: "VERIFIED:"
+    retryLimit: 2
+
+  - id: test
+    agentId: tester
+    input: |
+      # Task
+      {{task}}
+      
+      # Implementation from Developer
+      {{step:implement}}
+      
+      # Verification Result
+      {{step:verify}}
+      
+      # Your Role
+      You are the Tester. Your job is to write tests for the implementation.
+      
+      # Instructions
+      1. Write unit tests for all new functions/methods
+      2. Write integration tests for key workflows
+      3. Ensure tests cover edge cases
+      4. Run tests and ensure they pass
+      
+      # Output Format
+      After testing, output:
+      
+      STATUS: done
+      TESTS:
+      - [test file 1]: [test count] tests, [pass/fail]
+      - [test file 2]: [test count] tests, [pass/fail]
+      COVERAGE: [percentage]
+    expects: "STATUS: done"
+    retryLimit: 2
+
+  - id: review
+    agentId: reviewer
+    input: |
+      # Task
+      {{task}}
+      
+      # Implementation
+      {{step:implement}}
+      
+      # Verification
+      {{step:verify}}
+      
+      # Tests
+      {{step:test}}
+      
+      # Your Role
+      You are the Reviewer. Your job is to do a final code review before the feature is complete.
+      
+      # Instructions
+      1. Review code quality and style
+      2. Check for security issues
+      3. Verify performance considerations
+      4. Ensure documentation is adequate
+      
+      # Output Format
+      After review, output:
+      
+      REVIEW: approved/changes_requested
+      FEEDBACK:
+      - [item 1]
+      - [item 2]
+      ...
+    expects: "REVIEW:"
+    retryLimit: 1

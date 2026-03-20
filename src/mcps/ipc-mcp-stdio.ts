@@ -339,6 +339,182 @@ Use available_groups.json to find the JID for a group. The folder name should be
   },
 );
 
+// --- Workflow tools (Multi-Agent System) ---
+
+server.tool(
+  'workflow_list',
+  'List all available workflows that can be run.',
+  {},
+  async () => {
+    const workflowsFile = path.join(IPC_DIR, 'workflows.json');
+
+    try {
+      if (!fs.existsSync(workflowsFile)) {
+        return { content: [{ type: 'text' as const, text: 'No workflows installed. Run `workflow_install` to load built-in workflows.' }] };
+      }
+
+      const workflows = JSON.parse(fs.readFileSync(workflowsFile, 'utf-8'));
+
+      if (workflows.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No workflows installed.' }] };
+      }
+
+      const formatted = workflows
+        .map(
+          (w: { id: string; name: string; description?: string; agents?: { length: number } }) =>
+            `- ${w.id}: ${w.name}${w.description ? ` - ${w.description}` : ''} (${w.agents?.length || 0} agents)`,
+        )
+        .join('\n');
+
+      return { content: [{ type: 'text' as const, text: `Available workflows:\n${formatted}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading workflows: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
+  'workflow_run',
+  `Start a multi-agent workflow. A team of specialized agents will work together to complete your task.
+
+Each workflow has multiple steps, and each step is handled by a different agent. Agents verify each other's work and retry automatically on failure.
+
+Example: "Add OAuth login" with feature-dev workflow will:
+1. Planner breaks down the task into stories
+2. Developer implements each story
+3. Verifier checks each implementation
+4. Tester writes tests
+5. Reviewer does final code review
+
+The workflow runs in the background. Use workflow_status to check progress.`,
+  {
+    workflow_id: z.string().describe('The workflow ID (e.g., "feature-dev", "bug-fix", "security-audit")'),
+    task: z.string().describe('The task description. Be specific about what you want to achieve.'),
+  },
+  async (args) => {
+    const data = {
+      type: 'workflow_run',
+      workflowId: args.workflow_id,
+      task: args.task,
+      chatJid,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Workflow "${args.workflow_id}" started.\n\nTask: ${args.task}\n\nUse \`workflow_status\` to check progress. You can continue working while the workflow runs in the background.` }],
+    };
+  },
+);
+
+server.tool(
+  'workflow_status',
+  'Check the status of a workflow run. Provide a run ID or search by task description.',
+  {
+    query: z.string().optional().describe('Run ID or task description to search for. If omitted, shows all active runs.'),
+  },
+  async (args) => {
+    const runsFile = path.join(IPC_DIR, 'workflow_runs.json');
+
+    try {
+      if (!fs.existsSync(runsFile)) {
+        return { content: [{ type: 'text' as const, text: 'No workflow runs found.' }] };
+      }
+
+      const allRuns = JSON.parse(fs.readFileSync(runsFile, 'utf-8'));
+
+      let runs = allRuns;
+      if (args.query) {
+        runs = allRuns.filter(
+          (r: { id: string; task: string }) =>
+            r.id.includes(args.query!) || r.task.toLowerCase().includes(args.query!.toLowerCase()),
+        );
+      }
+
+      // Filter to active runs if no query
+      if (!args.query) {
+        runs = runs.filter((r: { status: string }) => ['running', 'paused'].includes(r.status));
+      }
+
+      if (runs.length === 0) {
+        return { content: [{ type: 'text' as const, text: args.query ? 'No matching workflow runs found.' : 'No active workflow runs.' }] };
+      }
+
+      const formatted = runs
+        .map(
+          (r: {
+            id: string;
+            workflowId: string;
+            task: string;
+            status: string;
+            currentStepIndex: number;
+            totalSteps: number;
+            currentStepName?: string;
+          }) => {
+            const progress = r.totalSteps ? `${r.currentStepIndex + 1}/${r.totalSteps}` : '';
+            const stepInfo = r.currentStepName ? ` (${r.currentStepName})` : '';
+            return `- [${r.id}] ${r.workflowId}: "${r.task.slice(0, 50)}..."\n  Status: ${r.status}${stepInfo} ${progress}`;
+          },
+        )
+        .join('\n\n');
+
+      return { content: [{ type: 'text' as const, text: `Workflow runs:\n${formatted}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading workflow runs: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
+  'workflow_resume',
+  'Resume a paused workflow run. Use this when a workflow has paused due to failures and you want to retry.',
+  {
+    run_id: z.string().describe('The run ID to resume'),
+  },
+  async (args) => {
+    const data = {
+      type: 'workflow_resume',
+      runId: args.run_id,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `Resume requested for run ${args.run_id}.` }] };
+  },
+);
+
+server.tool(
+  'workflow_install',
+  'Install built-in workflows from the workflows directory. Main group only.',
+  {},
+  async () => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can install workflows.' }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'workflow_install',
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Workflow installation requested. Built-in workflows will be loaded.' }] };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

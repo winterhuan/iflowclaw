@@ -37,7 +37,9 @@ function getExecutionMode(group: RegisteredGroup): ExecutionMode {
   // 3. Default based on group type
   // Main group -> direct (host machine, no sandbox)
   // Other groups -> container (Docker sandbox for isolation)
-  return group.isMain ? 'direct' : 'container';
+  // Note: group.isMain can be undefined, true, or false
+  // Use explicit check to avoid treating undefined as false
+  return group.isMain === true ? 'direct' : 'container';
 }
 
 /**

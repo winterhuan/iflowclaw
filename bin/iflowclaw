@@ -195,10 +195,16 @@ EOF
 
 setup_systemd() {
     mkdir -p "$HOME/.config/systemd/user"
-    sed "s|{{USER}}|$(whoami)|g; s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g; s|{{IFLOWCLAW_BIN_RUN_CMD}}|$PROJECT_ROOT/bin/iflowclaw run|g" \
+    # Capture current PATH (includes nvm, bun, etc.)
+    local current_path="$PATH"
+    sed "s|{{USER}}|$(whoami)|g; s|{{PROJECT_ROOT}}|$PROJECT_ROOT|g; s|{{IFLOWCLAW_BIN_RUN_CMD}}|$PROJECT_ROOT/bin/iflowclaw run|g; s|{{PATH}}|$current_path|g" \
         "$PROJECT_ROOT/iflowclaw.service.template" > "$HOME/.config/systemd/user/iflowclaw.service"
     systemctl --user daemon-reload
     echo "✓ 已安装"
+    echo ""
+    echo "   PATH 已设置为当前环境的值"
+    echo "   如需修改: nano ~/.config/systemd/user/iflowclaw.service"
+    echo ""
     echo "启用: systemctl --user enable --now iflowclaw"
 }
 

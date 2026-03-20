@@ -136,4 +136,57 @@ export interface AgentConfig {
   containerConfig?: ContainerConfig;
 }
 
+// --- Workflow types (Multi-Agent System) ---
+
+export interface WorkflowAgent {
+  id: string;
+  name: string;
+  groupFolder: string; // Maps to iFlowClaw group
+  workspaceFiles?: Record<string, string>; // filename -> content or path
+}
+
+export interface WorkflowStep {
+  id: string;
+  agentId: string;
+  input: string; // Template with {{task}}, {{previousSteps}}
+  expects?: string; // Expected output pattern (e.g., "STATUS: done")
+  retryLimit?: number; // Default: 3
+  timeout?: number; // Step-specific timeout in ms
+}
+
+export interface WorkflowDefinition {
+  id: string;
+  name: string;
+  description?: string;
+  agents: WorkflowAgent[];
+  steps: WorkflowStep[];
+  version?: string;
+}
+
+export interface WorkflowRun {
+  id: string;
+  workflowId: string;
+  task: string; // User's original task description
+  status: 'running' | 'completed' | 'failed' | 'paused';
+  currentStepIndex: number;
+  startedAt: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface WorkflowStepRun {
+  id: string;
+  runId: string;
+  stepId: string;
+  agentId: string;
+  groupFolder: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+  input: string; // Rendered input
+  output?: string;
+  retryCount: number;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
 // Note: Memory types removed - using Claude-Mem instead

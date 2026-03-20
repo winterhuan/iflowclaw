@@ -12,6 +12,8 @@ import { IFlowClient } from '@iflow-ai/iflow-cli-sdk';
 
 
 import { logger } from '../logger.js';
+import { modelRouter } from '../model-router.js';
+import { isRecoverableError } from '../model-config.js';
 
 function log(message: string): void {
   logger.info(`[agent] ${message}`);
@@ -74,6 +76,11 @@ async function getOrCreateGroupClient(
     if (!sessionId) {
       throw new Error('Failed to obtain session ID');
     }
+
+    // Select and set model for this group
+    const selectedModel = modelRouter.selectModel(groupFolder);
+    log(`Setting model to ${selectedModel} for group: ${groupFolder}`);
+    await client.config.set('model', selectedModel);
 
     // Cache the client
     groupClients.set(groupFolder, {
@@ -217,7 +224,7 @@ export async function runAgentDirect(
     prompt += '\n' + pending.join('\n');
   }
 
-    // Build options and get or create cached client
+  // Build options and get or create cached client
   const options = buildSharedIFlowOptions(input, false);
   const { client, isReused } = await getOrCreateGroupClient(group.folder, options);
   let currentSessionId = client.getSessionId() || undefined;
@@ -229,19 +236,93 @@ export async function runAgentDirect(
 
   log(`Using client for group ${group.folder}, sessionId: ${currentSessionId}, reused: ${isReused}`);
 
-  // Run the agent loop (shared with container mode)
-  const result = await runAgentLoop(client, prompt, {
-    sessionId: currentSessionId,
+  // Run the agent loop with model failure recovery
+  const result = await runAgentLoopWithRecovery(
+    client,
+    prompt,
+    group.folder,
+    currentSessionId,
     ipcDir,
-    onOutput,
-    log: (msg) => log(msg),
-  });
+    onOutput
+  );
 
   if (result.status === 'error') {
     await invalidateGroupClient(group.folder);
+  } else {
+    // Clear failure on success
+    const currentState = modelRouter.getState(group.folder);
+    modelRouter.clearFailure(group.folder, currentState.currentModel);
   }
 
   return result;
+}
+
+/**
+ * Run agent loop with automatic model switching on recoverable errors
+ */
+async function runAgentLoopWithRecovery(
+  client: IFlowClient,
+  prompt: string,
+  groupFolder: string,
+  sessionId: string,
+  ipcDir: string,
+  onOutput?: (output: AgentOutput) => Promise<void>,
+): Promise<AgentOutput> {
+  const maxRetries = 3;
+  let retryCount = 0;
+
+  while (retryCount <= maxRetries) {
+    const result = await runAgentLoop(client, prompt, {
+      sessionId,
+      ipcDir,
+      onOutput,
+      log: (msg) => log(msg),
+    });
+
+    if (result.status === 'success') {
+      return result;
+    }
+
+    // Check if this is a recoverable error
+    const errorMessage = result.error || '';
+    if (isRecoverableError(errorMessage)) {
+      const currentState = modelRouter.getState(groupFolder);
+      const failedModel = currentState.currentModel;
+
+      log(`Recoverable error detected, attempting model switch from ${failedModel}`);
+
+      const nextModel = modelRouter.handleFailure(groupFolder, failedModel, new Error(errorMessage));
+
+      if (nextModel) {
+        retryCount++;
+        log(`Switching to fallback model ${nextModel} (retry ${retryCount}/${maxRetries})`);
+
+        // Update the client with new model
+        try {
+          await client.config.set('model', nextModel);
+          // Continue to next iteration with new model
+          continue;
+        } catch (switchErr) {
+          log(`Failed to switch model: ${switchErr}`);
+          // If model switch fails, return the original error
+          return result;
+        }
+      } else {
+        log(`No fallback model available for ${groupFolder}`);
+        return result;
+      }
+    } else {
+      // Non-recoverable error, return immediately
+      return result;
+    }
+  }
+
+  // Max retries exceeded
+  return {
+    status: 'error',
+    result: null,
+    error: `Max retries (${maxRetries}) exceeded after model failures`,
+  };
 }
 
 // Note: saveConversationAndSummary removed - Claude-Mem handles session history via Hooks

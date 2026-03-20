@@ -3,11 +3,29 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE, GROUPS_DIR } from './config.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  saveWorkflowDefinition,
+  getAllWorkflowDefinitions,
+  getWorkflowRun,
+  updateWorkflowRun,
+  getActiveWorkflowRuns,
+  getWorkflowStepRunsByRun,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { AvailableGroup, RegisteredGroup } from './types.js';
+import {
+  parseWorkflowYaml,
+  loadAllWorkflows,
+  startWorkflowRun,
+  resumeWorkflowRun,
+  getWorkflowRunStatus,
+  prepareStepExecution,
+  getCurrentStep,
+  completeStep,
+} from './workflow/index.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -172,6 +190,10 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     agentConfig?: RegisteredGroup['agentConfig'];
+    // For workflow
+    workflowId?: string;
+    task?: string;
+    runId?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -450,6 +472,100 @@ export async function processTaskIpc(
       }
       break;
 
+    // --- Workflow IPC handlers ---
+
+    case 'workflow_install':
+      // Only main group can install workflows
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized workflow_install attempt blocked',
+        );
+        break;
+      }
+      try {
+        const workflowsDir = path.join(process.cwd(), 'workflows');
+        const workflows = loadAllWorkflows(workflowsDir);
+        for (const workflow of workflows) {
+          saveWorkflowDefinition(workflow);
+        }
+        logger.info(
+          { count: workflows.length, sourceGroup },
+          'Workflows installed via IPC',
+        );
+        // Write workflows.json snapshot
+        const workflowsFile = path.join(DATA_DIR, 'ipc', 'workflows.json');
+        fs.mkdirSync(path.dirname(workflowsFile), { recursive: true });
+        fs.writeFileSync(workflowsFile, JSON.stringify(workflows, null, 2));
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Failed to install workflows');
+      }
+      break;
+
+    case 'workflow_run':
+      if (data.workflowId && data.task) {
+        try {
+          const { getWorkflowDefinition: getWorkflow } = await import('./db.js');
+          const workflow = getWorkflow(data.workflowId as string);
+          if (!workflow) {
+            logger.warn(
+              { workflowId: data.workflowId },
+              'Workflow not found',
+            );
+            break;
+          }
+          const run = startWorkflowRun(workflow, data.task as string);
+          logger.info(
+            { runId: run.id, workflowId: data.workflowId, sourceGroup },
+            'Workflow run started via IPC',
+          );
+
+          // Prepare and execute the first step
+          const currentStep = getCurrentStep(workflow, run);
+          if (currentStep) {
+            prepareStepExecution(workflow, run, currentStep.step, currentStep.stepRun);
+            // Schedule task for the agent to execute
+            const taskPrompt = `Execute workflow step "${currentStep.step.id}".\n\nRead the workflow-context.md file in your workspace for instructions.`;
+            createTask({
+              id: `${run.id}-${currentStep.step.id}`,
+              group_folder: currentStep.stepRun.groupFolder,
+              chat_jid: data.chatJid || '',
+              prompt: taskPrompt,
+              schedule_type: 'once',
+              schedule_value: new Date().toISOString(),
+              context_mode: 'isolated',
+              next_run: new Date().toISOString(),
+              status: 'active',
+              created_at: new Date().toISOString(),
+            });
+          }
+
+          // Update workflow_runs.json snapshot
+          await updateWorkflowRunsSnapshot();
+        } catch (err) {
+          logger.error({ err, sourceGroup }, 'Failed to start workflow run');
+        }
+      }
+      break;
+
+    case 'workflow_resume':
+      if (data.runId) {
+        const run = resumeWorkflowRun(data.runId as string);
+        if (run) {
+          logger.info(
+            { runId: data.runId, sourceGroup },
+            'Workflow run resumed via IPC',
+          );
+          await updateWorkflowRunsSnapshot();
+        } else {
+          logger.warn(
+            { runId: data.runId },
+            'Workflow run not found or not paused',
+          );
+        }
+      }
+      break;
+
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }
@@ -457,3 +573,24 @@ export async function processTaskIpc(
 
 // Note: Memory IPC processing removed - using Claude-Mem instead
 // Claude-Mem handles memory via Hooks (SessionStart, PostToolUse, Stop, SessionEnd)
+
+/**
+ * Update workflow_runs.json snapshot for MCP tools to read
+ */
+async function updateWorkflowRunsSnapshot(): Promise<void> {
+  const runs = getActiveWorkflowRuns();
+  const runsFile = path.join(DATA_DIR, 'ipc', 'workflow_runs.json');
+  fs.mkdirSync(path.dirname(runsFile), { recursive: true });
+
+  const runsWithSteps = runs.map((run) => {
+    const steps = getWorkflowStepRunsByRun(run.id);
+    const currentStep = steps[run.currentStepIndex];
+    return {
+      ...run,
+      totalSteps: steps.length,
+      currentStepName: currentStep?.stepId,
+    };
+  });
+
+  fs.writeFileSync(runsFile, JSON.stringify(runsWithSteps, null, 2));
+}

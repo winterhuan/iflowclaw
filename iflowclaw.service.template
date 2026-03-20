@@ -11,6 +11,9 @@ RestartSec=10
 StandardOutput=append:{{PROJECT_ROOT}}/logs/iflowclaw.log
 StandardError=append:{{PROJECT_ROOT}}/logs/iflowclaw.log
 Environment=NODE_ENV=production
+# PATH is required for iFlow CLI (installed via nvm/npm)
+# This will be set during setup-systemd
+Environment=PATH={{PATH}}
 
 [Install]
 WantedBy=default.target

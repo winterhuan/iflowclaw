@@ -10,6 +10,9 @@ import {
   RegisteredGroup,
   ScheduledTask,
   TaskRunLog,
+  WorkflowDefinition,
+  WorkflowRun,
+  WorkflowStepRun,
 } from './types.js';
 
 let db: Database.Database;
@@ -83,6 +86,48 @@ function createSchema(database: Database.Database): void {
       requires_trigger INTEGER DEFAULT 1,
       is_main INTEGER DEFAULT 0
     );
+
+    -- Workflow tables for multi-agent system
+    CREATE TABLE IF NOT EXISTS workflow_definitions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      config TEXT NOT NULL,
+      version TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      task TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running',
+      current_step_index INTEGER DEFAULT 0,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      error TEXT,
+      FOREIGN KEY (workflow_id) REFERENCES workflow_definitions(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
+
+    CREATE TABLE IF NOT EXISTS workflow_step_runs (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      step_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      group_folder TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      input TEXT NOT NULL,
+      output TEXT,
+      retry_count INTEGER DEFAULT 0,
+      started_at TEXT,
+      completed_at TEXT,
+      error TEXT,
+      FOREIGN KEY (run_id) REFERENCES workflow_runs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_step_runs_run ON workflow_step_runs(run_id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_step_runs_status ON workflow_step_runs(status);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -640,4 +685,324 @@ function migrateJsonState(): void {
       }
     }
   }
+}
+
+// --- Workflow accessors ---
+
+export function saveWorkflowDefinition(workflow: WorkflowDefinition): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO workflow_definitions (id, name, description, config, version, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    workflow.id,
+    workflow.name,
+    workflow.description || null,
+    JSON.stringify(workflow),
+    workflow.version || null,
+    new Date().toISOString(),
+  );
+}
+
+export function getWorkflowDefinition(id: string): WorkflowDefinition | undefined {
+  const row = db
+    .prepare('SELECT config FROM workflow_definitions WHERE id = ?')
+    .get(id) as { config: string } | undefined;
+  if (!row) return undefined;
+  return JSON.parse(row.config) as WorkflowDefinition;
+}
+
+export function getAllWorkflowDefinitions(): WorkflowDefinition[] {
+  const rows = db
+    .prepare('SELECT config FROM workflow_definitions')
+    .all() as Array<{ config: string }>;
+  return rows.map((row) => JSON.parse(row.config) as WorkflowDefinition);
+}
+
+export function deleteWorkflowDefinition(id: string): void {
+  // Delete all runs and step runs first
+  const runs = db
+    .prepare('SELECT id FROM workflow_runs WHERE workflow_id = ?')
+    .all(id) as Array<{ id: string }>;
+  for (const run of runs) {
+    db.prepare('DELETE FROM workflow_step_runs WHERE run_id = ?').run(run.id);
+  }
+  db.prepare('DELETE FROM workflow_runs WHERE workflow_id = ?').run(id);
+  db.prepare('DELETE FROM workflow_definitions WHERE id = ?').run(id);
+}
+
+export function createWorkflowRun(
+  run: Omit<WorkflowRun, 'startedAt'>,
+): void {
+  db.prepare(
+    `INSERT INTO workflow_runs (id, workflow_id, task, status, current_step_index, started_at, completed_at, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    run.id,
+    run.workflowId,
+    run.task,
+    run.status,
+    run.currentStepIndex,
+    new Date().toISOString(),
+    run.completedAt || null,
+    run.error || null,
+  );
+}
+
+export function getWorkflowRun(id: string): WorkflowRun | undefined {
+  const row = db
+    .prepare('SELECT * FROM workflow_runs WHERE id = ?')
+    .get(id) as
+    | {
+        id: string;
+        workflow_id: string;
+        task: string;
+        status: string;
+        current_step_index: number;
+        started_at: string;
+        completed_at: string | null;
+        error: string | null;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    workflowId: row.workflow_id,
+    task: row.task,
+    status: row.status as WorkflowRun['status'],
+    currentStepIndex: row.current_step_index,
+    startedAt: row.started_at,
+    completedAt: row.completed_at || undefined,
+    error: row.error || undefined,
+  };
+}
+
+export function updateWorkflowRun(
+  id: string,
+  updates: Partial<
+    Pick<
+      WorkflowRun,
+      'status' | 'currentStepIndex' | 'completedAt' | 'error'
+    >
+  >,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.currentStepIndex !== undefined) {
+    fields.push('current_step_index = ?');
+    values.push(updates.currentStepIndex);
+  }
+  if (updates.completedAt !== undefined) {
+    fields.push('completed_at = ?');
+    values.push(updates.completedAt);
+  }
+  if (updates.error !== undefined) {
+    fields.push('error = ?');
+    values.push(updates.error);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  db.prepare(
+    `UPDATE workflow_runs SET ${fields.join(', ')} WHERE id = ?`,
+  ).run(...values);
+}
+
+export function getWorkflowRunsByWorkflow(workflowId: string): WorkflowRun[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC',
+    )
+    .all(workflowId) as Array<{
+      id: string;
+      workflow_id: string;
+      task: string;
+      status: string;
+      current_step_index: number;
+      started_at: string;
+      completed_at: string | null;
+      error: string | null;
+    }>;
+  return rows.map((row) => ({
+    id: row.id,
+    workflowId: row.workflow_id,
+    task: row.task,
+    status: row.status as WorkflowRun['status'],
+    currentStepIndex: row.current_step_index,
+    startedAt: row.started_at,
+    completedAt: row.completed_at || undefined,
+    error: row.error || undefined,
+  }));
+}
+
+export function getActiveWorkflowRuns(): WorkflowRun[] {
+  const rows = db
+    .prepare(
+      "SELECT * FROM workflow_runs WHERE status IN ('running', 'paused') ORDER BY started_at DESC",
+    )
+    .all() as Array<{
+      id: string;
+      workflow_id: string;
+      task: string;
+      status: string;
+      current_step_index: number;
+      started_at: string;
+      completed_at: string | null;
+      error: string | null;
+    }>;
+  return rows.map((row) => ({
+    id: row.id,
+    workflowId: row.workflow_id,
+    task: row.task,
+    status: row.status as WorkflowRun['status'],
+    currentStepIndex: row.current_step_index,
+    startedAt: row.started_at,
+    completedAt: row.completed_at || undefined,
+    error: row.error || undefined,
+  }));
+}
+
+export function createWorkflowStepRun(stepRun: WorkflowStepRun): void {
+  db.prepare(
+    `INSERT INTO workflow_step_runs (id, run_id, step_id, agent_id, group_folder, status, input, output, retry_count, started_at, completed_at, error)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    stepRun.id,
+    stepRun.runId,
+    stepRun.stepId,
+    stepRun.agentId,
+    stepRun.groupFolder,
+    stepRun.status,
+    stepRun.input,
+    stepRun.output || null,
+    stepRun.retryCount,
+    stepRun.startedAt || null,
+    stepRun.completedAt || null,
+    stepRun.error || null,
+  );
+}
+
+export function getWorkflowStepRunsByRun(runId: string): WorkflowStepRun[] {
+  const rows = db
+    .prepare(
+      'SELECT * FROM workflow_step_runs WHERE run_id = ? ORDER BY id',
+    )
+    .all(runId) as Array<{
+      id: string;
+      run_id: string;
+      step_id: string;
+      agent_id: string;
+      group_folder: string;
+      status: string;
+      input: string;
+      output: string | null;
+      retry_count: number;
+      started_at: string | null;
+      completed_at: string | null;
+      error: string | null;
+    }>;
+  return rows.map((row) => ({
+    id: row.id,
+    runId: row.run_id,
+    stepId: row.step_id,
+    agentId: row.agent_id,
+    groupFolder: row.group_folder,
+    status: row.status as WorkflowStepRun['status'],
+    input: row.input,
+    output: row.output || undefined,
+    retryCount: row.retry_count,
+    startedAt: row.started_at || undefined,
+    completedAt: row.completed_at || undefined,
+    error: row.error || undefined,
+  }));
+}
+
+export function updateWorkflowStepRun(
+  id: string,
+  updates: Partial<
+    Pick<
+      WorkflowStepRun,
+      'status' | 'input' | 'output' | 'retryCount' | 'startedAt' | 'completedAt' | 'error'
+    >
+  >,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.input !== undefined) {
+    fields.push('input = ?');
+    values.push(updates.input);
+  }
+  if (updates.output !== undefined) {
+    fields.push('output = ?');
+    values.push(updates.output);
+  }
+  if (updates.retryCount !== undefined) {
+    fields.push('retry_count = ?');
+    values.push(updates.retryCount);
+  }
+  if (updates.startedAt !== undefined) {
+    fields.push('started_at = ?');
+    values.push(updates.startedAt);
+  }
+  if (updates.completedAt !== undefined) {
+    fields.push('completed_at = ?');
+    values.push(updates.completedAt);
+  }
+  if (updates.error !== undefined) {
+    fields.push('error = ?');
+    values.push(updates.error);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  db.prepare(
+    `UPDATE workflow_step_runs SET ${fields.join(', ')} WHERE id = ?`,
+  ).run(...values);
+}
+
+export function getWorkflowStepRun(id: string): WorkflowStepRun | undefined {
+  const row = db
+    .prepare('SELECT * FROM workflow_step_runs WHERE id = ?')
+    .get(id) as
+    | {
+        id: string;
+        run_id: string;
+        step_id: string;
+        agent_id: string;
+        group_folder: string;
+        status: string;
+        input: string;
+        output: string | null;
+        retry_count: number;
+        started_at: string | null;
+        completed_at: string | null;
+        error: string | null;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stepId: row.step_id,
+    agentId: row.agent_id,
+    groupFolder: row.group_folder,
+    status: row.status as WorkflowStepRun['status'],
+    input: row.input,
+    output: row.output || undefined,
+    retryCount: row.retry_count,
+    startedAt: row.started_at || undefined,
+    completedAt: row.completed_at || undefined,
+    error: row.error || undefined,
+  };
 }

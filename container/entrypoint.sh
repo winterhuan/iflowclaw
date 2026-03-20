@@ -24,6 +24,10 @@ else
     ls -la /app/dist
 fi
 
+# Set NODE_PATH so modules can be found from /app/node_modules
+# even when running from /workspace/group
+export NODE_PATH=/app/node_modules
+
 # Run agent wrapper
 echo "[entrypoint] Executing agent-wrapper..."
 exec node /app/dist/container/agent-wrapper.js
