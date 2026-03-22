@@ -8,16 +8,17 @@ ENV_FILE="$PROJECT_ROOT/.env"
 STATE_FILE="$PROJECT_ROOT/data/.container_state"
 FINGERPRINT_FILES="$PROJECT_ROOT/container/Dockerfile $PROJECT_ROOT/container/entrypoint.sh $PROJECT_ROOT/package.json $PROJECT_ROOT/package-lock.json"
 
-check_node() {
-    if ! command -v node >/dev/null; then
-        echo "❌ 需要安装 Node.js 20+"
+check_python() {
+    if ! command -v python3 >/dev/null; then
+        echo "❌ 需要安装 Python 3.11+"
         exit 1
     fi
-    local ver=$(node -v | cut -d. -f1 | tr -d v)
-    if [ "$ver" -lt 20 ]; then
-        echo "❌ Node.js 版本需要 20+"
-        exit 1
-    fi
+    python3 - <<'PY'
+import sys
+major, minor = sys.version_info[:2]
+if (major, minor) < (3, 11):
+    raise SystemExit("❌ Python 版本需要 3.11+")
+PY
 }
 
 check_env() {
@@ -41,13 +42,7 @@ is_systemd() { systemctl --user list-unit-files iflowclaw.service 2>/dev/null | 
 
 is_pm2() { command -v pm2 >/dev/null 2>&1 && pm2 describe iflowclaw >/dev/null 2>&1; }
 
-build_project() {
-    if [ -d "$PROJECT_ROOT/dist" ] && [ "$(find "$PROJECT_ROOT/src" -newer "$PROJECT_ROOT/dist" -type f 2>/dev/null | wc -l)" -eq 0 ]; then
-        return
-    fi
-    echo "🔨 构建项目..."
-    cd "$PROJECT_ROOT" && npm run build >/dev/null 2>&1 && echo "✓ 完成"
-}
+build_project() { return; }
 
 build_container() {
     if ! has_container; then
@@ -66,10 +61,8 @@ build_container() {
 }
 
 start_service() {
-    check_node || exit 1
+    check_python || exit 1
     check_env || exit 1
-    build_project
-    build_container
     mkdir -p "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data"
 
     if is_systemd; then
@@ -89,7 +82,7 @@ start_service() {
     fi
     
     echo "🚀 启动 iFlowClaw..."
-    cd "$PROJECT_ROOT" && nohup node dist/index.js >> "$LOG_FILE" 2>&1 &
+    cd "$PROJECT_ROOT" && nohup python3 -m iflowclaw run >> "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     sleep 2
     
@@ -125,7 +118,7 @@ stop_service() {
         echo "✓ 已停止"
         return
     fi
-    local p=$(pgrep -f "node dist/index.js")
+    local p=$(pgrep -f "python3 -m iflowclaw run")
     if [ -n "$p" ]; then
         kill $p 2>/dev/null
         has_container && docker rm -f $(docker ps -aq --filter "name=iflow-") 2>/dev/null || true
@@ -162,12 +155,11 @@ show_status() {
 }
 
 run_foreground() {
-    check_node || exit 1
+    check_python || exit 1
     check_env || exit 1
     mkdir -p "$PROJECT_ROOT/logs" "$PROJECT_ROOT/data"
-    build_project
     echo "🚀 启动 iFlowClaw (前台模式)..."
-    cd "$PROJECT_ROOT" && exec node dist/index.js
+    cd "$PROJECT_ROOT" && exec python3 -m iflowclaw run
 }
 
 setup_wizard() {
@@ -187,8 +179,6 @@ FEISHU_APP_SECRET=$secret
 LOG_LEVEL=info
 EOF
     echo "✓ 配置已保存"
-    build_project
-    build_container
     echo ""
     echo "下一步: iflow login && iflowclaw start"
 }

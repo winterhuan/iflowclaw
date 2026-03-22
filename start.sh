@@ -12,19 +12,19 @@ if [ ! -f "$PROJECT_ROOT/.env" ] || ! grep -q "FEISHU_APP_ID=" "$PROJECT_ROOT/.e
     exit 1
 fi
 
-# 检查依赖
-if [ ! -d "$PROJECT_ROOT/node_modules" ]; then
-    echo "📦 安装依赖..."
-    cd "$PROJECT_ROOT" && npm install
+# 检查 Python
+if ! command -v python3 >/dev/null; then
+    echo "❌ 需要安装 Python 3.11+"
+    exit 1
 fi
 
-# 检查构建
-if [ ! -d "$PROJECT_ROOT/dist" ] || [ "$(find "$PROJECT_ROOT/src" -newer "$PROJECT_ROOT/dist" -type f 2>/dev/null | wc -l)" -gt 0 ]; then
-    echo "🔨 构建项目..."
-    cd "$PROJECT_ROOT" && npm run build
-fi
+python3 - <<'PY'
+import sys
+major, minor = sys.version_info[:2]
+if (major, minor) < (3, 11):
+    raise SystemExit("❌ Python 版本需要 3.11+")
+PY
 
-# 前台启动（开发模式）
 echo "🚀 启动 iFlowClaw (开发模式)..."
 cd "$PROJECT_ROOT"
-node dist/index.js
+python3 -m iflowclaw run

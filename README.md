@@ -2,12 +2,12 @@
 
 > 一个你能真正理解的 AI 助手
 
-iFlowClaw 是一个**轻量级的个人 AI 助手**，直接调用 iFlow SDK，没有复杂的容器层。
+iFlowClaw 是一个**轻量级的个人 AI 助手**，支持 **多后端**（iFlow CLI Python SDK / Claude Python SDK），单进程运行。
 
 ## 特性
 
-- **直连 iFlow SDK** - 无需 Docker，单进程运行
-- **飞书渠道** - WebSocket 长连接，无需公网地址
+- **多后端** - 同时支持 iFlow 与 Claude（按群/按环境切换）
+- **飞书渠道** - 事件订阅（建议使用长连接模式）
 - **图片理解** - 支持图片消息识别
 - **任务调度** - 支持 cron、interval、once 三种调度方式
 - **群组管理** - 主群可管理所有群组，普通群独立运行
@@ -18,7 +18,7 @@ iFlowClaw 是一个**轻量级的个人 AI 助手**，直接调用 iFlow SDK，�
 ```bash
 git clone https://github.com/winterhuan/iflowclaw.git
 cd iflowclaw
-npm install
+python3 -m pip install -e .
 ```
 
 ## 快速开始
@@ -56,14 +56,14 @@ npm install
 ### 4. 配置本项目
 
 ```bash
-npm run setup   # 输入 App ID 和 Secret
+./bin/iflowclaw setup   # 输入 App ID 和 Secret
 iflow login     # iFlow OAuth 认证
 ```
 
 ### 5. 启动服务
 
 ```bash
-npm start
+./bin/iflowclaw start
 ```
 
 ### 6. 配置事件订阅
@@ -82,17 +82,16 @@ npm start
 
 | 命令 | 说明 |
 |------|------|
-| `npm start` | 后台运行（推荐生产使用） |
-| `npm run run` | 前台运行（直接查看日志） |
-| `npm run dev` | 开发模式（tsx 运行源码） |
-| `npm run dev:watch` | 开发热重载 |
+| `./bin/iflowclaw start` | 后台运行（推荐生产使用） |
+| `./bin/iflowclaw run` | 前台运行（直接查看日志） |
+| `python3 -m iflowclaw run` | 直接前台运行 |
 
 ## 全局命令
 
 安装后可执行以下命令将 `iflowclaw` 链接到全局，之后可在任意目录使用：
 
 ```bash
-npm link
+python3 -m pip install -e .
 iflowclaw setup    # 配置飞书凭证
 iflowclaw start    # 启动服务
 iflowclaw stop     # 停止服务
@@ -101,17 +100,6 @@ iflowclaw logs     # 查看日志
 ```
 
 ## 管理命令
-
-在项目目录下也可以通过 npm scripts 运行：
-
-```bash
-npm run setup    # 配置飞书凭证
-npm start        # 启动服务
-npm run stop     # 停止服务
-npm run restart  # 重启服务
-npm run status   # 查看状态
-npm run logs     # 查看日志
-```
 
 或直接运行脚本：
 
@@ -141,13 +129,17 @@ npm run logs     # 查看日志
 | `MAX_CONCURRENT_AGENTS` | `5` | 最大并发 Agent 数 |
 | `LOG_LEVEL` | `info` | 日志等级 |
 | `TZ` | 系统时区 | 任务调度时区 |
+| `AGENT_BACKEND` | `iflow` | 默认后端：`iflow` / `claude` |
+| `IFLOW_MODEL` | 空 | iFlow 默认模型（可选） |
+| `CLAUDE_MODEL` | 空 | Claude 默认模型（可选） |
+| `ANTHROPIC_API_KEY` | 空 | Claude API Key（使用 claude 后端必须） |
 
 ## 项目结构
 
 ```
 iflowclaw/
 ├── bin/iflowclaw      # CLI 管理工具
-├── src/               # 源代码
+├── iflowclaw/         # Python 运行时
 ├── groups/            # 群组目录
 │   ├── global/        # 全局共享上下文
 │   └── main/          # 主群目录
@@ -159,9 +151,7 @@ iflowclaw/
 ## 开发
 
 ```bash
-npm run build      # 构建
-npm run typecheck  # 类型检查
-npm test           # 运行测试
+python3 -m compileall -q iflowclaw
 ```
 
 ## 鸣谢
