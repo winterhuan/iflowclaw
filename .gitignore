@@ -30,6 +30,12 @@ iflowclaw.service
 # Test
 coverage/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
 # TypeScript
 tsconfig.tsbuildinfo
 
@@ -48,3 +54,6 @@ groups/*/*
 !groups/*/.iflow/**
 !groups/*/claude-mem-iflow
 !groups/*/claude-mem-iflow/**
+
+# Vendor dependencies
+_vendor/nanoclaw/

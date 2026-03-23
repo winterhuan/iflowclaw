@@ -5,14 +5,14 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory={{PROJECT_ROOT}}
-ExecStart={{IFLOWCLAW_BIN_RUN_CMD}}
+ExecStart={{PYTHON_BIN}} -m iflowclaw run
 Restart=always
 RestartSec=10
 StandardOutput=append:{{PROJECT_ROOT}}/logs/iflowclaw.log
 StandardError=append:{{PROJECT_ROOT}}/logs/iflowclaw.log
-Environment=NODE_ENV=production
-# PATH is required for iFlow CLI (installed via nvm/npm)
-# This will be set during setup-systemd
+Environment=PYTHONPATH={{PROJECT_ROOT}}
+# PATH is required for iFlow CLI (installed via npm)
+# This will be set during setup
 Environment=PATH={{PATH}}
 
 [Install]

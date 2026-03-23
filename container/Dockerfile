@@ -1,34 +1,10 @@
-# iFlow Agent Container
-# Runs iFlow SDK in isolated Linux container with browser automation support
-#
-# Build: ./container/build.sh [tag]
-# Test:  docker run -it --rm \
-#          -v $(pwd)/groups/main:/workspace/group:rw \
-#          -v ~/.iflow:/home/node/.iflow:ro \
-#          iflow-agent:latest
+# iFlowClaw Agent Container
+# Runs Claude Agent SDK in isolated Linux VM with browser automation
 
-# ---- Stage 1: Build TypeScript ----
-FROM node:20-slim AS builder
+FROM python:3.11-slim
 
-WORKDIR /build
-
-# Copy package files and install all dependencies (including devDependencies for build)
-COPY package*.json ./
-RUN npm ci
-
-# Copy TypeScript config and source
-COPY tsconfig.json ./
-COPY src/ ./src/
-
-# Build TypeScript
-RUN npm run build
-
-# ---- Stage 2: Runtime Image ----
-FROM node:20-slim
-
-# Install system dependencies for Chromium (for agent-browser skill)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+# Install system dependencies for Chromium and git
+RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
     fonts-noto-cjk \
@@ -48,42 +24,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxshmfence1 \
     curl \
     git \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && rm -rf /var/lib/apt/lists/*
 
-# Set Chromium path for agent-browser skill
+# Set Chromium path
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install iFlow CLI (required for iFlow SDK)
-RUN npm install -g @iflow-ai/iflow-cli
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    croniter \
+    httpx \
+    mcp \
+    pydantic \
+    claude-agent-sdk \
+    anthropic
 
 # Create app directory
 WORKDIR /app
 
-# Copy package files and install production dependencies
-COPY package*.json ./
-RUN npm ci --only=production
-
-# Copy compiled code from builder
-COPY --from=builder /build/dist/ ./dist/
+# Copy and install the iflowclaw package
+COPY iflowclaw-package/ ./iflowclaw-package/
+RUN pip install --no-cache-dir ./iflowclaw-package/
 
 # Create workspace directories
-RUN mkdir -p /workspace/group \
-             /workspace/global \
-             /workspace/extra \
-             /workspace/ipc/messages \
-             /workspace/ipc/tasks \
-             /workspace/ipc/input
+RUN mkdir -p /workspace/group /workspace/global /workspace/extra \
+             /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
-# Copy entrypoint script
-COPY container/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# Create entrypoint script
+# Container input (prompt, group info) is passed via stdin JSON.
+# Credentials are injected by the host's credential proxy -- never passed here.
+# Follow-up messages arrive via IPC files in /workspace/ipc/input/
+RUN printf '#!/bin/bash\nset -e\npython -m iflowclaw.agents.container_entry\n' > /app/entrypoint.sh \
+    && chmod +x /app/entrypoint.sh
 
-# Set ownership to node user (non-root) for writable directories
-RUN chown -R node:node /workspace \
-    && chown -R node:node /app \
-    && chown -R node:node /home/node
+# Set ownership for writable directories
+RUN useradd -m -s /bin/bash node 2>/dev/null || true \
+    && chown -R node:node /workspace /home/node
 
 # Switch to non-root user
 USER node
@@ -91,9 +66,5 @@ USER node
 # Set working directory to group workspace
 WORKDIR /workspace/group
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD node -e "console.log('healthy')" || exit 1
-
-# Use the entrypoint script (MUST be last)
+# Entry point reads JSON from stdin, outputs JSON to stdout
 ENTRYPOINT ["/app/entrypoint.sh"]
