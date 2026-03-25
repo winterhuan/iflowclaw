@@ -144,7 +144,13 @@ def _sync_directory(
                 shutil.rmtree(dst_sub)
             shutil.copytree(src_sub, dst_sub)
             # 对 .md 文件做模板替换
-            _apply_templates(dst_sub, group_dir=group_dir, global_dir=global_dir, ipc_dir=ipc_dir, project_dir=project_dir)
+            _apply_templates(
+                dst_sub,
+                group_dir=group_dir,
+                global_dir=global_dir,
+                ipc_dir=ipc_dir,
+                project_dir=project_dir,
+            )
         except Exception as e:
             logger.warning("skills: failed to sync %s -> %s: %s", src_sub, dst_sub, e)
 

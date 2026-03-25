@@ -145,9 +145,7 @@ class FeishuChannel(Channel):
         try:
             # lark-oapi >= 1.5.x: Client constructor
             event_handler = (
-                lark.EventDispatcherHandler.builder("", "")
-                .register_p2_im_message_receive_v1(on_event)
-                .build()
+                lark.EventDispatcherHandler.builder("", "").register_p2_im_message_receive_v1(on_event).build()
             )
             return client_cls(
                 app_id=self._config.feishu_app_id,
@@ -269,10 +267,10 @@ def register_feishu_channel(config: AppConfig) -> None:
             return None
         return FeishuChannel(
             config,
-            on_message=opts["onMessage"],
-            on_chat_metadata=opts["onChatMetadata"],
-            registered_groups=opts["registeredGroups"],
-            auto_register_group=opts.get("autoRegisterGroup"),
+            on_message=opts.on_message,
+            on_chat_metadata=opts.on_chat_metadata,
+            registered_groups=opts.registered_groups,
+            auto_register_group=opts.auto_register_group,
         )
 
     register_channel("feishu", factory)

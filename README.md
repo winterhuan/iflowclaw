@@ -8,7 +8,7 @@
 
 - 运行时：Python 3.11+
 - 渠道：Feishu WebSocket 长连接
-- 后端：`iflow`、`claude`、`agno`
+- 后端：`iflow`、`claude`、`agno`、`container`
 - 执行模式：`direct`、`container`
 - 调度：`cron`、`interval`、`once`
 - 存储：SQLite
@@ -16,9 +16,8 @@
 
 说明：
 
-- `iflow` 和 `claude` 是主路径能力。
-- `agno` 和 `container` 已进入代码主线，但目前更适合视为实验性能力。
-- 根目录旧文档里曾描述过更早的“两后端直连”架构，现已不再准确。
+- `iflow`、`claude`、`agno`、`container` 均为主路径能力。
+- `container` 模式支持在 Docker/Podman 中隔离运行 `claude`、`iflow`、`agno` 子后端。
 
 ## 核心能力
 

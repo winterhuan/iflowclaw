@@ -254,7 +254,13 @@ def get_messages_since(chat_jid: str, since_timestamp: str, assistant_name: str)
     ]
 
 
-def get_new_messages(since_timestamp: str, assistant_name: str, *, jids: list[str] | None = None, limit: int = 200) -> list[NewMessage]:
+def get_new_messages(
+    since_timestamp: str,
+    assistant_name: str,
+    *,
+    jids: list[str] | None = None,
+    limit: int = 200,
+) -> list[NewMessage]:
     conn = _ensure_conn()
     with _lock:
         if jids:

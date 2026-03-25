@@ -4,16 +4,21 @@
 
 iFlowClaw 是一个轻量级个人 AI 助手，基于 Python 构建，支持飞书渠道和多 Agent SDK 后端。
 
-当前版本采用**主机进程直连 Agent SDK**的架构，支持以下 Agent 后端：
+支持以下 Agent 后端：
 
-- **iFlow CLI SDK** (`iflow-cli-sdk`)
-- **Claude Agent SDK** (`claude-agent-sdk`)
+| 后端 | 说明 | 执行模式 |
+|------|------|----------|
+| **iFlow CLI SDK** | `iflow-cli-sdk` | 直连 |
+| **Claude Agent SDK** | `claude-agent-sdk` | 直连 / 容器 |
+| **Agno** | `agno` (OpenAI/Anthropic/Google/Groq/Ollama) | 直连 / 容器 |
+| **Container** | Docker/Podman 容器隔离执行 | 容器 |
 
 核心目标是：
 
 - 单进程、少文件、易理解
 - 按群组隔离工作目录与会话
 - 支持多 Agent SDK 后端切换
+- 支持容器化隔离执行
 - 在最小复杂度下支持任务调度与 MCP 工具
 
 ## 核心特性
@@ -23,7 +28,8 @@ iFlowClaw 是一个轻量级个人 AI 助手，基于 Python 构建，支持飞�
 - **触发词机制**：默认 `@iFlow`（随 `ASSISTANT_NAME` 变化）
 - **发送者白名单**：支持 `trigger/drop` 两种模式
 - **任务调度**：支持 `cron`、`interval`、`once`
-- **多 Agent 后端**：支持 iFlow 和 Claude 两种 SDK，可按群组配置
+- **多 Agent 后端**：iFlow / Claude / Agno / Container，可按群组配置
+- **容器化执行**：通过 Docker/Podman 隔离运行 Agent，支持多后端
 - **MCP 工具桥接**：Agent 通过本地 MCP 服务器访问发消息、任务管理、群管理能力
 - **群组隔离目录**：每个群组使用独立 `groups/<folder>/` 与 `data/ipc/<folder>/`
 
@@ -32,7 +38,8 @@ iFlowClaw 是一个轻量级个人 AI 助手，基于 Python 构建，支持飞�
 | 类别 | 技术 |
 |------|------|
 | 运行时 | Python 3.11+ |
-| AI SDK | `iflow-cli-sdk` / `claude-agent-sdk` |
+| AI SDK | `iflow-cli-sdk` / `claude-agent-sdk` / `agno` |
+| 容器运行时 | Docker / Podman |
 | 渠道 SDK | `lark-oapi` |
 | 数据库 | SQLite (stdlib `sqlite3`) |
 | 调度 | `croniter` |
@@ -61,6 +68,9 @@ iflowclaw/
 │   ├── ipc.py                      # IPC 文件监听
 │   ├── snapshots.py                # 任务/群组快照
 │   ├── tools.py                    # 工具定义与执行
+│   ├── credential_proxy.py         # 凭据代理（容器模式）
+│   ├── mount_security.py           # 容器挂载安全
+│   ├── skills.py                   # Skills 同步
 │   │
 │   ├── agents/                     # Agent 执行核心
 │   │   ├── runner.py               # Agent 运行器（后端路由）
@@ -68,7 +78,9 @@ iflowclaw/
 │   │   └── backends/               # Agent 后端实现
 │   │       ├── base.py             # 后端协议定义
 │   │       ├── iflow.py            # IFlow SDK 后端
-│   │       └── claude.py           # Claude SDK 后端
+│   │       ├── claude.py           # Claude SDK 后端
+│   │       ├── agno.py             # Agno 后端（多模型支持）
+│   │       └── container.py        # 容器化执行后端
 │   │
 │   ├── channels/                   # 消息渠道
 │   │   ├── registry.py             # 渠道注册
@@ -81,7 +93,8 @@ iflowclaw/
 │   ├── global/AGENTS.md            # 全局共享上下文
 │   └── <folder>/AGENTS.md          # 各群组独立配置
 │
-├── tests_py/                       # Python 测试
+├── tests/                          # 单元测试
+├── tests_integration/              # 集成测试
 ├── data/ipc/                       # 运行期 IPC 目录
 ├── store/messages.db               # SQLite 数据库
 ├── AGENTS.md                       # 项目指南
@@ -93,8 +106,8 @@ iflowclaw/
 ### 系统要求
 
 - Python 3.11+
-- iFlow CLI（如使用 iFlow 后端）
 - 飞书应用凭证（`FEISHU_APP_ID`、`FEISHU_APP_SECRET`）
+- 可选：iFlow CLI（iFlow 后端）、Docker/Podman（容器模式）
 
 ### 安装
 
@@ -102,12 +115,13 @@ iflowclaw/
 git clone <repo-url>
 cd iflowclaw
 
-# 安装全部依赖（iFlow + Claude）
+# 安装全部依赖
 pip install -e ".[all]"
 
 # 或仅安装需要的后端
 pip install -e ".[iflow]"
 pip install -e ".[claude]"
+pip install -e ".[agno]"
 ```
 
 ### 启动
@@ -124,8 +138,8 @@ python -m iflowclaw run
 ### 开发命令
 
 ```bash
-python -m pytest tests_py/ -v    # 运行测试
-python -m ruff check iflowclaw/  # 代码检查
+python -m pytest tests/ -v        # 运行测试
+python -m ruff check src/iflowclaw/  # 代码检查
 ```
 
 ## 认证方式
@@ -142,10 +156,40 @@ SDK 会读取 `~/.iflow/settings.json` 凭证。
 
 ### Claude 后端
 
-设置环境变量：
+直连模式设置环境变量：
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+或使用 OAuth：
+
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN="..."
+```
+
+容器模式下，凭据通过代理自动注入。
+
+### Agno 后端
+
+Agno 支持多种模型提供商，通过 `AGNO_MODEL` 配置模型：
+
+```bash
+# OpenAI
+export AGNO_MODEL="openai:gpt-4o"
+export OPENAI_API_KEY="sk-..."
+
+# Anthropic
+export AGNO_MODEL="anthropic:claude-sonnet-4-20250514"
+
+# Google
+export AGNO_MODEL="google:gemini-2.0-flash"
+
+# Groq
+export AGNO_MODEL="groq:llama-3.1-70b"
+
+# Ollama（本地）
+export AGNO_MODEL="ollama:llama3.1"
 ```
 
 ## 配置说明
@@ -162,12 +206,15 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 | 变量 | 默认值 | 描述 |
 |------|--------|------|
 | `ASSISTANT_NAME` | `iFlow` | 助手名称，影响触发词正则 |
-| `AGENT_BACKEND` | `iflow` | 默认 Agent 后端 (`iflow` / `claude`) |
+| `AGENT_BACKEND` | `iflow` | 默认 Agent 后端 (`iflow` / `claude` / `agno` / `container`) |
+| `EXECUTION_MODE` | `direct` | 默认执行模式 (`direct` / `container`) |
 | `IFLOW_MODEL` | - | iFlow 后端默认模型 |
 | `CLAUDE_MODEL` | - | Claude 后端默认模型 |
+| `AGNO_MODEL` | - | Agno 后端默认模型 (格式: `provider:model`) |
 | `AGENT_TIMEOUT` | `300000` | 单次 Agent 超时（ms） |
 | `IDLE_TIMEOUT` | `180000` | 空闲关闭输入等待时长（ms） |
 | `MAX_CONCURRENT_AGENTS` | `5` | 全局并发 Agent 数上限 |
+| `CONTAINER_IMAGE` | `iflowclaw-agent:latest` | 容器镜像 |
 | `LOG_LEVEL` | `info` | 日志等级 |
 | `TZ` | 系统时区 | 任务调度时区 |
 
@@ -182,18 +229,42 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ```text
 AgentRunner
-  ├── 根据 agent_config.backend 选择后端
+  ├── 根据 agent_config.backend / execution_mode 选择后端
   │
   ├── IFlowBackend (iflow-cli-sdk)
   │   ├── IFlowClient 连接
   │   ├── MCP 工具桥接
   │   └── 流式消息处理
   │
-  └── ClaudeBackend (claude-agent-sdk)
-      ├── query() 调用
-      ├── SDK MCP Server
-      └── 权限控制
+  ├── ClaudeBackend (claude-agent-sdk)
+  │   ├── query() 调用
+  │   ├── SDK MCP Server
+  │   └── 权限控制
+  │
+  ├── AgnoBackend (agno)
+  │   ├── 多模型支持 (OpenAI/Anthropic/Google/Groq/Ollama)
+  │   ├── Agent + MCPTools 集成
+  │   ├── Skills 加载
+  │   └── 流式输出
+  │
+  └── ContainerBackend (docker/podman)
+      ├── 容器隔离执行
+      ├── 凭据代理注入
+      ├── 挂载管理 (group_dir, ipc_dir, sessions)
+      └── 支持 claude/iflow/agno 子后端
 ```
+
+### 执行模式
+
+| 模式 | 说明 |
+|------|------|
+| `direct` | 主机进程直连 Agent SDK |
+| `container` | Docker/Podman 容器隔离执行 |
+
+执行模式优先级：
+1. 群组 `agent_config.execution_mode`（最高）
+2. 主群：默认 `direct`，非主群：默认 `container`
+3. 全局 `EXECUTION_MODE` 配置
 
 ### Per-Group 后端配置
 
@@ -201,9 +272,18 @@ AgentRunner
 
 ```json
 {
+  "backend": "agno",
+  "model": "openai:gpt-4o",
+  "execution_mode": "container",
+  "timeout": 600000
+}
+```
+
+```json
+{
   "backend": "claude",
   "model": "sonnet",
-  "timeout": 600000
+  "execution_mode": "direct"
 }
 ```
 
@@ -215,10 +295,42 @@ AgentRunner
   -> DB(messages/chats)
   -> Message Loop + Trigger 判定
   -> GroupQueue(按群串行 + 并发上限)
-  -> AgentRunner -> IFlowBackend / ClaudeBackend
+  -> AgentRunner
+      ├── direct:  IFlowBackend / ClaudeBackend / AgnoBackend
+      └── container: ContainerBackend
+          ├── docker/podman run
+          ├── 凭据代理
+          └── claude / iflow / agno 子后端
   -> MCP(消息/任务/群管理 via IPC)
   -> 渠道发送回复
 ```
+
+## 容器模式
+
+容器模式通过 Docker/Podman 隔离运行 Agent，适用于：
+
+- 需要环境隔离的场景
+- 限制 Agent 访问权限
+- 多租户部署
+
+### 容器镜像
+
+默认镜像：`iflowclaw-agent:latest`
+
+可通过 `CONTAINER_IMAGE` 环境变量或 `container_image` 配置项自定义。
+
+### 挂载点
+
+| 主机路径 | 容器路径 | 说明 |
+|----------|----------|------|
+| `groups/<folder>` | `/workspace/group` | 群组目录 |
+| `groups/global` | `/workspace/global` | 全局共享目录 (只读) |
+| `data/ipc/<folder>` | `/workspace/ipc` | IPC 通信目录 |
+| `data/sessions/<folder>` | `/home/node/.claude` | Claude 会话数据 |
+
+### 凭据传递
+
+Claude 后端通过本地代理传递凭据，避免将密钥暴露给容器。
 
 ## MCP 工具（内置）
 

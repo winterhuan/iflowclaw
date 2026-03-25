@@ -9,10 +9,10 @@ from ..types import Channel
 
 @dataclass(slots=True)
 class ChannelOpts:
-    onMessage: Callable[..., Any] | None = None
-    onChatMetadata: Callable[..., Any] | None = None
-    registeredGroups: Callable[..., Any] | None = None
-    autoRegisterGroup: Callable[..., Any] | None = None
+    on_message: Callable[..., Any] | None = None
+    on_chat_metadata: Callable[..., Any] | None = None
+    registered_groups: Callable[..., Any] | None = None
+    auto_register_group: Callable[..., Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __getitem__(self, key: str) -> Any:
