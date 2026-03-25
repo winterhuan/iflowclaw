@@ -57,5 +57,8 @@ groups/*/*
 !groups/*/claude-mem-iflow
 !groups/*/claude-mem-iflow/**
 
+# Exception: main group .iflow should not be committed
+groups/main/.iflow/
+
 # Vendor dependencies
 _vendor/nanoclaw/
