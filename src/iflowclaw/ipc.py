@@ -129,6 +129,10 @@ async def _handle_ipc_file(
         text = payload.get("text")
         if not isinstance(chat_jid, str) or not isinstance(text, str):
             raise ValueError("invalid message payload")
+        if not is_main:
+            target_group = registered_groups_by_jid.get(chat_jid)
+            if not target_group or target_group.folder != source_folder:
+                raise PermissionError("cannot send message to another group")
         await send_message(chat_jid, text)
         return
 
@@ -214,11 +218,35 @@ async def _handle_ipc_file(
         elif typ == "cancel_task":
             delete_task(task_id)
         else:
+            new_schedule_type = payload.get("schedule_type")
+            new_schedule_value = payload.get("schedule_value")
+            next_run_update = None
+            if new_schedule_type and new_schedule_value:
+                now_utc = datetime.now(UTC)
+                tmp_task = ScheduledTask(
+                    id="tmp",
+                    group_folder=source_folder,
+                    chat_jid="",
+                    prompt=payload.get("prompt") or "",
+                    schedule_type=new_schedule_type,  # type: ignore[assignment]
+                    schedule_value=new_schedule_value,
+                    context_mode="group",  # type: ignore[assignment]
+                    next_run=None,
+                    last_run=None,
+                    last_result=None,
+                    status="active",
+                    created_at=_utc_now_iso(),
+                )
+                if new_schedule_type == "once":
+                    next_run_update = _parse_once_local_to_utc_iso(new_schedule_value, config.timezone)
+                else:
+                    next_run_update = compute_next_run(tmp_task, now_utc=now_utc, timezone_name=config.timezone)
             update_task(
                 task_id,
                 prompt=payload.get("prompt"),
-                schedule_type=payload.get("schedule_type"),
-                schedule_value=payload.get("schedule_value"),
+                schedule_type=new_schedule_type,
+                schedule_value=new_schedule_value,
+                next_run=next_run_update,
             )
 
         write_tasks_snapshot(config, list_tasks())

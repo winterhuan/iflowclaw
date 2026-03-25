@@ -7,9 +7,9 @@ import signal
 import uuid
 from datetime import UTC, datetime
 
-from .agents.runner import AgentRunner
+from .agents.runner import AgentRunner, _resolve_execution_mode
 from .channels.feishu import register_feishu_channel
-from .channels.registry import get_channel_factory, get_registered_channel_names
+from .channels.registry import ChannelOpts, get_channel_factory, get_registered_channel_names
 from .config import AppConfig, load_config
 from .credential_proxy import start_credential_proxy
 from .db import (
@@ -133,6 +133,18 @@ async def run_service(config: AppConfig) -> None:
     # Start credential proxy (containers route API calls through this)
     proxy_server = await start_credential_proxy(config)
 
+    # Check container runtime and clean up orphans if container execution may be used
+    if config.default_execution_mode == "container" or any(
+        _resolve_execution_mode(g.agent_config or AgentConfig(), config, bool(g.is_main)) == "container"
+        for g in registered_groups.values()
+    ):
+        try:
+            from .agents.backends.container import _cleanup_orphans, _get_runtime
+            _get_runtime()
+            _cleanup_orphans()
+        except Exception as e:
+            logger.warning("Container runtime check failed: %s (container mode unavailable)", e)
+
     register_feishu_channel(config)
 
     channels = []
@@ -156,14 +168,14 @@ async def run_service(config: AppConfig) -> None:
                 return
         store_message(msg)
 
-    channel_opts = {
-        "onMessage": on_message,
-        "onChatMetadata": on_chat_metadata,
-        "registeredGroups": _registered_groups,
-        "autoRegisterGroup": lambda jid, name, channel: _try_auto_register_main_group(
+    channel_opts = ChannelOpts(
+        onMessage=on_message,
+        onChatMetadata=on_chat_metadata,
+        registeredGroups=_registered_groups,
+        autoRegisterGroup=lambda jid, name, channel: _try_auto_register_main_group(
             jid, name, channel, registered_groups, config
         ),
-    }
+    )
 
     for name in get_registered_channel_names():
         factory = get_channel_factory(name)
@@ -234,8 +246,7 @@ async def run_service(config: AppConfig) -> None:
         await ch.set_typing(chat_jid, True)
 
         agent_cfg = group.agent_config or AgentConfig()
-        execution_mode = agent_cfg.execution_mode or config.default_execution_mode
-        use_container = (not is_main) and execution_mode == "container"
+        use_container = _resolve_execution_mode(agent_cfg, config, is_main) == "container"
 
         if use_container:
             queue.register_container(chat_jid)
@@ -371,7 +382,8 @@ async def run_service(config: AppConfig) -> None:
     async def message_loop() -> None:
         nonlocal last_ts
         while not stop_event.is_set():
-            msgs = get_new_messages(last_ts, config.assistant_name, limit=200)
+            jids = list(registered_groups.keys())
+            msgs = get_new_messages(last_ts, config.assistant_name, jids=jids if jids else None, limit=200)
             if msgs:
                 last_ts = msgs[-1].timestamp
                 _save_state(last_ts, last_agent_ts)
@@ -421,7 +433,11 @@ async def run_service(config: AppConfig) -> None:
                 pass
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda s=sig: asyncio.ensure_future(shutdown(s)))
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.ensure_future(shutdown(s)))
+        except NotImplementedError:
+            # Windows does not support add_signal_handler
+            signal.signal(sig, lambda s, f: asyncio.ensure_future(shutdown(signal.Signals(s))))
 
     await asyncio.gather(ipc_task, sched_task, msg_task)
 

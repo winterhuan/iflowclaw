@@ -1,97 +1,177 @@
 # 集成测试说明
 
-## 概述
+`tests_integration/` 用来放比 `tests/` 更接近真实运行链路的验证，但当前这些测试里，只有一部分会真正触达外部依赖或容器环境。
 
-集成测试目录包含可以真实运行的测试，用于验证：
-1. 多个agent后端的正确配置和运行
-2. 直连模式和容器模式的切换
-3. 容器内凭证代理的正确工作
-4. MCP工具的正确桥接
+## 当前定位
 
-## 运行测试
+这组测试的目标是补充以下方面的验证：
 
-### 基本测试（不依赖真实凭证）
+- AgentRunner 的后端选择与执行模式选择
+- 多后端配置对象是否能正确构造
+- MCP 环境变量与工具列表是否与当前实现一致
+- 容器入口和容器后端的基础装配逻辑
+- 凭证代理配置的基础行为
+
+注意：
+
+- 这些测试并不等同于完整端到端测试。
+- 当前大部分用例仍属于“结构集成测试”或“配置集成测试”。
+- 真正依赖容器、真实 SDK、真实凭证的路径覆盖还比较有限。
+
+## 目录
+
+```text
+tests_integration/
+├── conftest.py
+├── test_basic.py
+├── test_multi_backend.py
+└── README.md
+```
+
+## 与默认 pytest 的关系
+
+当前 `pyproject.toml` 只把 `tests/` 设为默认测试目录。
+
+这意味着：
+
+- 直接运行 `pytest` 时，默认不会执行 `tests_integration/`
+- 需要显式指定目录或文件
+
+## 运行方式
+
+运行全部集成测试：
 
 ```bash
-# 运行所有集成测试
 pytest tests_integration/ -v
+```
 
-# 运行基本测试
+或：
+
+```bash
+python -m pytest tests_integration/ -v
+```
+
+只运行基础集成测试：
+
+```bash
 pytest tests_integration/test_basic.py -v
+```
 
-# 运行多后端测试
+只运行多后端相关测试：
+
+```bash
 pytest tests_integration/test_multi_backend.py -v
 ```
 
-### 容器测试
+## 当前测试内容
 
-容器测试需要Docker/Podman可用，并且需要设置环境变量：
+### `test_basic.py`
+
+当前主要验证：
+
+- `AgentRunner`、`AgentConfig`、`BackendContext`、`BackendResult` 基础构造
+- `_resolve_execution_mode()` 的当前行为
+- `load_config()` 的基础加载逻辑
+
+特点：
+
+- 不依赖真实后端
+- 不访问真实 Feishu
+- 更接近“轻量集成测试”
+
+### `test_multi_backend.py`
+
+当前主要验证：
+
+- `_BACKEND_MAP` 和默认模型映射是否完整
+- 多后端配置与执行模式解析
+- MCP 工具列表与环境变量构造
+- `credential_proxy` 的基础配置行为
+- `container_entry.build_config()` 的配置生成
+
+特点：
+
+- 大量用例仍然是在校验配置和装配结果
+- 不是每个测试都会真正运行 Agent SDK
+- 容器相关用例默认不会执行
+
+## 容器测试
+
+容器测试默认通过 `RUN_CONTAINER_TESTS` 开关控制：
 
 ```bash
-# 运行容器测试
 RUN_CONTAINER_TESTS=1 pytest tests_integration/test_multi_backend.py::TestContainerBackend -v
 ```
 
-### 真实后端测试
+前提：
 
-要测试真实的后端，需要设置相应的环境变量：
+- Docker 或 Podman 可用
+- 已构建或可拉起对应容器镜像
+- 当前主机环境允许容器运行
 
-#### iFlow后端
+注意：
+
+- 现有容器测试覆盖仍偏基础
+- 容器链路本身在当前代码里仍应视为实验性能力
+
+## 真实后端测试
+
+如果要用真实后端做验证，需要额外准备对应凭证和模型配置。
+
+### Claude
+
 ```bash
-# 确保iFlow CLI已安装并登录
-export IFLOW_MODEL="gpt-4"
-pytest tests_integration/test_multi_backend.py -v -k "iflow"
-```
-
-#### Claude后端
-```bash
-# 设置Anthropic API密钥
-export ANTHROPIC_API_KEY="sk-ant-..."
-export CLAUDE_MODEL="claude-3-sonnet-20240229"
+export ANTHROPIC_API_KEY="..."
+export CLAUDE_MODEL="..."
 pytest tests_integration/test_multi_backend.py -v -k "claude"
 ```
 
-#### Agno后端
+### iFlow
+
+当前代码中的 `iflow` 路径依赖 Python SDK 与相应模型配置。若走 OpenAI 兼容配置，还需要：
+
 ```bash
-# 设置OpenAI API密钥
-export OPENAI_API_KEY="sk-..."
-export AGNO_MODEL="gpt-4"
+export OPENAI_API_KEY="..."
+export IFLOW_MODEL="..."
+pytest tests_integration/test_multi_backend.py -v -k "iflow"
+```
+
+### Agno
+
+```bash
+export OPENAI_API_KEY="..."
+export AGNO_MODEL="openai:gpt-4o"
 pytest tests_integration/test_multi_backend.py -v -k "agno"
 ```
 
-## 测试结构
+说明：
 
-```
-tests_integration/
-├── conftest.py           # 测试配置
-├── test_basic.py         # 基本测试（不依赖真实凭证）
-├── test_multi_backend.py # 多后端集成测试
-└── README.md            # 本文件
-```
+- 这些命令表示“如何准备环境”，不代表当前测试已经对真实后端做了充分覆盖。
+- 运行真实后端前，建议先确认对应 optional dependency 已安装。
 
-## 测试覆盖
+## 当前局限
 
-### test_basic.py
-- AgentRunner创建测试
-- BackendContext创建测试
-- AgentConfig创建测试
-- BackendResult创建测试
-- 执行模式解析测试
-- 配置加载测试
+这组测试目前还存在几个明显边界：
 
-### test_multi_backend.py
-- 后端配置测试
-- 执行模式解析测试
-- 容器后端测试
-- Agent运行器测试
-- MCP集成测试
-- 凭证代理测试
-- 容器入口测试
-- 端到端工作流测试
+- 默认不会自动执行
+- 不足以证明飞书消息链路端到端可用
+- 不足以证明 IPC 权限边界完全正确
+- 不足以证明容器执行模式已经稳定
+- 对数据库、调度器、消息恢复等真实运行路径覆盖仍不深
 
-## 注意事项
+## 建议使用方式
 
-1. **凭证安全**：不要在测试中提交真实的API密钥
-2. **容器测试**：容器测试需要Docker/Podman可用
-3. **超时设置**：集成测试有默认超时，可以根据需要调整
-4. **环境隔离**：每个测试使用临时目录，确保测试隔离
+推荐按下面顺序使用：
+
+1. 先跑 `tests/`，确保单元层无回归。
+2. 再显式跑 `tests_integration/`，确认后端装配和配置层没坏。
+3. 需要验证真实行为时，再单独跑容器或真实凭证相关测试。
+
+## 后续补强方向
+
+如果继续完善这组测试，优先级建议是：
+
+1. 增加 `cli.py` 主循环的可控集成测试。
+2. 增加 `ipc.py` 的权限与任务管理真实链路测试。
+3. 增加 `group_queue.py` 与容器后续消息注入链路测试。
+4. 增加调度器与任务运行日志的真实集成测试。

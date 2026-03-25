@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -62,5 +65,8 @@ def should_drop_message(chat_jid: str, config: SenderAllowlistConfig) -> bool:
 
 
 def is_trigger_allowed(chat_jid: str, sender: str, config: SenderAllowlistConfig) -> bool:
-    return is_sender_allowed(chat_jid, sender, config)
+    allowed = is_sender_allowed(chat_jid, sender, config)
+    if not allowed and config.log_denied:
+        logger.info("sender-allowlist: trigger denied for %s in %s", sender, chat_jid)
+    return allowed
 

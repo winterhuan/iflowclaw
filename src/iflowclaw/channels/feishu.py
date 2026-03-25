@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 from ..config import AppConfig
 from ..logging import get_logger
 from ..types import Channel, NewMessage, OnChatMetadata, OnInboundMessage, RegisteredGroup
-from .registry import register_channel
+from .registry import ChannelOpts, register_channel
 
 logger = get_logger(__name__)
 
@@ -32,6 +33,8 @@ class FeishuChannel(Channel):
         self._registered_groups = registered_groups
         self._auto_register_group = auto_register_group
         self._connected = False
+        self._main_loop: asyncio.AbstractEventLoop | None = None
+        self._ws_thread: threading.Thread | None = None
 
         try:
             import lark_oapi as lark
@@ -46,6 +49,7 @@ class FeishuChannel(Channel):
         self._ws = None
 
     async def connect(self) -> None:
+        self._main_loop = asyncio.get_event_loop()
         ws_client = self._detect_ws_client()
         if ws_client is None:
             raise RuntimeError(
@@ -54,7 +58,32 @@ class FeishuChannel(Channel):
             )
 
         self._ws = ws_client
-        await ws_client.start()
+
+        # lark-oapi ws.Client uses sync start() with its own event loop, run in dedicated thread
+        # Need to create fresh event loop for lark-oapi to use (module-level loop is bound at import time)
+        started = threading.Event()
+
+        def run_ws() -> None:
+            import lark_oapi.ws.client as ws_mod
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            # Patch the module-level loop that lark-oapi captured at import time
+            ws_mod.loop = loop
+            try:
+                ws_client.start()
+                started.set()
+            except Exception as e:
+                logger.error("ws.Client.start() failed: %s", e)
+                started.set()
+            finally:
+                loop.close()
+
+        self._ws_thread = threading.Thread(target=run_ws, daemon=True)
+        self._ws_thread.start()
+
+        # Wait briefly for connection to establish
+        started.wait(timeout=5)
         self._connected = True
 
     async def send_message(self, jid: str, text: str) -> None:
@@ -108,19 +137,35 @@ class FeishuChannel(Channel):
 
         channel = self
 
-        async def on_event(data: Any) -> None:
-            await channel._handle_event(data)
+        def on_event(data: Any) -> None:
+            # Schedule async handler from sync callback (called from ws thread)
+            if channel._main_loop and channel._main_loop.is_running():
+                asyncio.run_coroutine_threadsafe(channel._handle_event(data), channel._main_loop)
 
         try:
-            builder = client_cls.builder()
-            return (
-                builder.app_id(self._config.feishu_app_id)
-                .app_secret(self._config.feishu_app_secret)
-                .on_event(on_event)
+            # lark-oapi >= 1.5.x: Client constructor
+            event_handler = (
+                lark.EventDispatcherHandler.builder("", "")
+                .register_p2_im_message_receive_v1(on_event)
                 .build()
             )
+            return client_cls(
+                app_id=self._config.feishu_app_id,
+                app_secret=self._config.feishu_app_secret,
+                event_handler=event_handler,
+            )
         except Exception:
-            return None
+            try:
+                # lark-oapi < 1.5.x: builder pattern
+                builder = client_cls.builder()
+                return (
+                    builder.app_id(self._config.feishu_app_id)
+                    .app_secret(self._config.feishu_app_secret)
+                    .on_event(on_event)
+                    .build()
+                )
+            except Exception:
+                return None
 
     async def _handle_event(self, data: Any) -> None:
         try:
@@ -219,7 +264,7 @@ class FeishuChannel(Channel):
 
 
 def register_feishu_channel(config: AppConfig) -> None:
-    def factory(opts: dict[str, Any]) -> Channel | None:
+    def factory(opts: ChannelOpts) -> Channel | None:
         if not config.feishu_app_id or not config.feishu_app_secret:
             return None
         return FeishuChannel(

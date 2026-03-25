@@ -1,11 +1,3 @@
-"""Container Backend - 在 Docker 容器中运行 Agent
-
-支持多后端（claude/iflow/agno），根据不同后端注入不同的凭证：
-- claude: 通过 credential proxy 注入 Anthropic 凭证
-- iflow: 挂载 ~/.iflow/settings.json
-- agno: 注入 OPENAI_API_KEY 环境变量
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ...config import BackendCredentials
+from ...credential_proxy import ProxyConfig, start_credential_proxy_with_proxy_config
 from .base import BackendContext, BackendResult, StreamCallback
 
 logger = logging.getLogger(__name__)
@@ -69,7 +63,7 @@ def _cleanup_orphans() -> None:
         )
         if result.returncode != 0:
             return
-        orphans = [n.strip() for n in result.stdout.strip().splitlines() if n.strip()]
+        orphans = [name.strip() for name in result.stdout.strip().splitlines() if name.strip()]
         for name in orphans:
             try:
                 subprocess.run(_stop_container_cmd(name), capture_output=True, timeout=15)
@@ -89,11 +83,9 @@ def _build_mounts(
     groups_dir: Path,
     backend: str,
 ) -> list[tuple[str, str, bool]]:
-    """构建容器挂载点"""
     mounts: list[tuple[str, str, bool]] = []
     group_dir = groups_dir / group_folder
 
-    # 主群挂载项目目录
     if is_main:
         mounts.append((str(project_root), "/workspace/project", True))
         env_file = project_root / ".env"
@@ -106,7 +98,6 @@ def _build_mounts(
         if global_dir.is_dir():
             mounts.append((str(global_dir), "/workspace/global", True))
 
-    # Claude 会话目录
     sessions_dir = data_dir / "sessions" / group_folder / ".claude"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     settings_file = sessions_dir / "settings.json"
@@ -125,9 +116,10 @@ def _build_mounts(
             + "\n",
             encoding="utf-8",
         )
+
+    _sync_skills_for_container(project_root, sessions_dir, group_dir, backend)
     mounts.append((str(sessions_dir), "/home/node/.claude", False))
 
-    # IPC 目录
     ipc_dir = data_dir / "ipc" / group_folder
     for sub in ("messages", "tasks", "input"):
         (ipc_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -136,35 +128,61 @@ def _build_mounts(
     return mounts
 
 
+def _sync_skills_for_container(
+    project_root: Path,
+    sessions_dir: Path,
+    group_dir: Path,
+    backend: str,
+) -> None:
+    from ...skills import sync_skills_for_backend
+
+    kwargs = dict(
+        group_dir="/workspace/group",
+        global_dir="/workspace/global",
+        ipc_dir="/workspace/ipc",
+        project_dir="/workspace/project",
+    )
+
+    if backend == "claude":
+        sync_skills_for_backend("claude", project_root, sessions_dir.parent, **kwargs)
+    elif backend == "iflow":
+        sync_skills_for_backend("iflow", project_root, group_dir, **kwargs)
+    elif backend == "agno":
+        sync_skills_for_backend("agno", project_root, group_dir, **kwargs)
+
+
 def _build_env_vars(
     backend: str,
     credential_proxy_port: int,
+    credentials: BackendCredentials,
+    timezone: str,
     model: str | None = None,
 ) -> list[str]:
-    """构建容器环境变量"""
-    args = []
-
-    tz = os.environ.get("TZ", "Asia/Shanghai")
-    args.extend(["-e", f"TZ={tz}"])
+    args = ["-e", f"TZ={timezone}"]
 
     if backend == "claude":
-        # Claude 后端通过 credential proxy 注入凭证
         args.extend(["-e", f"ANTHROPIC_BASE_URL=http://{CONTAINER_HOST_GATEWAY}:{credential_proxy_port}"])
         args.extend(["-e", "ANTHROPIC_API_KEY=placeholder"])
         if model:
             args.extend(["-e", f"CLAUDE_MODEL={model}"])
     elif backend in ("iflow", "agno"):
-        # iFlow 和 Agno 后端使用 OpenAI 兼容 API
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
-        if openai_key:
-            args.extend(["-e", f"OPENAI_API_KEY={openai_key}"])
-        openai_url = os.environ.get("OPENAI_BASE_URL", "")
-        if openai_url:
-            args.extend(["-e", f"OPENAI_BASE_URL={openai_url}"])
+        if credentials.openai_api_key:
+            args.extend(["-e", f"OPENAI_API_KEY={credentials.openai_api_key}"])
+        if credentials.openai_base_url:
+            args.extend(["-e", f"OPENAI_BASE_URL={credentials.openai_base_url}"])
         if model:
             args.extend(["-e", f"IFLOW_MODEL={model}" if backend == "iflow" else f"AGNO_MODEL={model}"])
 
     return args
+
+
+def _build_proxy_config(credentials: BackendCredentials) -> ProxyConfig:
+    return ProxyConfig(
+        auth_mode="api-key" if credentials.anthropic_api_key else "oauth",
+        api_key=credentials.anthropic_api_key or "",
+        oauth_token=credentials.claude_oauth_token or "",
+        upstream_url=credentials.anthropic_base_url,
+    )
 
 
 def _build_args(
@@ -174,24 +192,58 @@ def _build_args(
     env_vars: list[str],
     container_image: str = "iflowclaw-agent:latest",
 ) -> list[str]:
-    """构建 docker run 参数"""
     args = [runtime, "run", "-i", "--rm", "--name", container_name]
-
     args.extend(env_vars)
     args.extend(_host_gateway_args())
 
-    host_uid = os.getuid()
-    host_gid = os.getgid()
+    host_uid = os.getuid() if hasattr(os, "getuid") else None
+    host_gid = os.getgid() if hasattr(os, "getgid") else None
     if host_uid is not None and host_uid != 0 and host_uid != 1000:
         args.extend(["--user", f"{host_uid}:{host_gid}"])
         args.extend(["-e", "HOME=/home/node"])
 
     for host_path, container_path, readonly in mounts:
-        mode = "ro" if readonly else "rw"
-        args.extend(["-v", f"{host_path}:{container_path}:{mode}"])
+        if readonly:
+            args.extend(["-v", f"{host_path}:{container_path}:ro"])
+        else:
+            args.extend(["-v", f"{host_path}:{container_path}"])
 
     args.append(container_image)
     return args
+
+
+def _ipc_input_dir(data_dir: Path, group_folder: str) -> Path:
+    return data_dir / "ipc" / group_folder / "input"
+
+
+def _write_close_sentinel(data_dir: Path, group_folder: str) -> None:
+    ipc_input_dir = _ipc_input_dir(data_dir, group_folder)
+    ipc_input_dir.mkdir(parents=True, exist_ok=True)
+    (ipc_input_dir / "_close").write_text("", encoding="utf-8")
+
+
+def _clear_ipc_input(data_dir: Path, group_folder: str) -> None:
+    ipc_input_dir = _ipc_input_dir(data_dir, group_folder)
+    if not ipc_input_dir.exists():
+        return
+    for path in ipc_input_dir.iterdir():
+        if not path.is_file():
+            continue
+        if path.name == "_close" or path.suffix == ".json" or path.name.endswith(".json.tmp"):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def _result_from_payload(data: dict[str, Any], fallback_session_id: str | None = None) -> BackendResult:
+    result_text = data.get("result")
+    return BackendResult(
+        status=str(data.get("status", "success")),
+        text="" if result_text is None else str(result_text),
+        new_session_id=data.get("newSessionId") or fallback_session_id,
+        error=data.get("error"),
+    )
 
 
 class ContainerBackend:
@@ -209,6 +261,9 @@ class ContainerBackend:
         idle_timeout_ms: int = 180_000,
         credential_proxy_port: int = 3001,
         container_image: str = "iflowclaw-agent:latest",
+        assistant_name: str = "iFlow",
+        timezone: str = "Asia/Shanghai",
+        credentials: BackendCredentials | None = None,
     ) -> None:
         self._model = model
         self._backend = backend
@@ -219,6 +274,9 @@ class ContainerBackend:
         self._idle_timeout_ms = idle_timeout_ms
         self._credential_proxy_port = credential_proxy_port
         self._container_image = container_image
+        self._assistant_name = assistant_name
+        self._timezone = timezone
+        self._credentials = credentials or BackendCredentials()
 
     async def run(
         self,
@@ -232,28 +290,24 @@ class ContainerBackend:
         except Exception as e:
             return BackendResult(status="error", text="", error=str(e))
 
-        # 如果是Claude后端，启动凭证代理
         proxy_server = None
         if self._backend == "claude":
-            try:
-                from ..config import AppConfig
-                from ..credential_proxy import start_credential_proxy
-
-                # 创建一个临时配置对象用于凭证代理
-                # 注意：这里需要从环境变量或配置中获取凭证信息
-                config = AppConfig(
-                    project_root=self._project_root,
-                    data_dir=self._data_dir,
-                    groups_dir=self._groups_dir,
-                    credential_proxy_port=self._credential_proxy_port,
+            if not (self._credentials.anthropic_api_key or self._credentials.claude_oauth_token):
+                return BackendResult(
+                    status="error",
+                    text="",
+                    error="Claude container backend requires ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN",
                 )
-                proxy_server = await start_credential_proxy(config, port=self._credential_proxy_port)
+            try:
+                proxy_server = await start_credential_proxy_with_proxy_config(
+                    _build_proxy_config(self._credentials),
+                    port=self._credential_proxy_port,
+                )
             except Exception as e:
-                logger.warning("Failed to start credential proxy: %s", e)
+                return BackendResult(status="error", text="", error=f"Failed to start credential proxy: {e}")
 
         _cleanup_orphans()
 
-        # 主运行逻辑，使用try/finally确保清理
         return await self._run_with_cleanup(
             runtime=runtime,
             user_prompt=user_prompt,
@@ -271,7 +325,6 @@ class ContainerBackend:
         on_stream: StreamCallback | None,
         proxy_server: asyncio.AbstractServer | None,
     ) -> BackendResult:
-        """实际运行容器，并在结束后清理凭证代理"""
         try:
             return await self._run_container(
                 runtime=runtime,
@@ -295,8 +348,6 @@ class ContainerBackend:
         context: BackendContext,
         on_stream: StreamCallback | None,
     ) -> BackendResult:
-        """容器运行的主逻辑"""
-
         mounts = _build_mounts(
             context.group_folder,
             context.is_main,
@@ -309,12 +360,13 @@ class ContainerBackend:
         env_vars = _build_env_vars(
             self._backend,
             self._credential_proxy_port,
+            self._credentials,
+            self._timezone,
             self._model,
         )
 
         safe_name = context.group_folder.replace("/", "-").replace("\\", "-")[:50]
         container_name = f"iflowclaw-{safe_name}-{int(time.time() * 1000) % 100000}"
-
         container_args = _build_args(
             runtime,
             container_name,
@@ -329,7 +381,7 @@ class ContainerBackend:
             "groupFolder": context.group_folder,
             "chatJid": context.chat_jid,
             "isMain": context.is_main,
-            "assistantName": os.environ.get("ASSISTANT_NAME", "iFlow"),
+            "assistantName": self._assistant_name,
             "backend": self._backend,
         }
         if self._model:
@@ -343,7 +395,6 @@ class ContainerBackend:
         group_dir.mkdir(parents=True, exist_ok=True)
 
         timeout_ms = max(self._container_timeout_ms, self._idle_timeout_ms + 30_000)
-
         proc = await asyncio.create_subprocess_exec(
             *container_args,
             stdin=asyncio.subprocess.PIPE,
@@ -362,19 +413,24 @@ class ContainerBackend:
         timed_out = False
         result_futures: list[asyncio.Task[None]] = []
         parse_buffer = ""
+        result_payload: dict[str, Any] | None = None
 
         timeout_task: asyncio.TimerHandle | None = None
         loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[dict[str, Any]] = loop.create_future()
 
-        def _kill_on_timeout() -> None:
-            nonlocal timed_out
-            timed_out = True
-            logger.error("Container %s timed out", container_name)
+        def _stop_container() -> None:
             try:
                 subprocess.run(_stop_container_cmd(container_name), capture_output=True, timeout=15)
             except Exception:
                 if proc.returncode is None:
                     proc.kill()
+
+        def _kill_on_timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
+            logger.error("Container %s timed out", container_name)
+            _stop_container()
 
         def _reset_timeout() -> None:
             nonlocal timeout_task
@@ -398,30 +454,33 @@ class ContainerBackend:
 
                 if is_stdout:
                     stdout_buf.append(text)
-                    if on_stream:
-                        parse_buffer += text
-                        while True:
-                            start_idx = parse_buffer.find(OUTPUT_START_MARKER)
-                            if start_idx == -1:
-                                break
-                            end_idx = parse_buffer.find(OUTPUT_END_MARKER, start_idx)
-                            if end_idx == -1:
-                                break
-                            json_str = parse_buffer[start_idx + len(OUTPUT_START_MARKER) : end_idx].strip()
-                            parse_buffer = parse_buffer[end_idx + len(OUTPUT_END_MARKER) :]
-                            try:
-                                data = json.loads(json_str)
-                                sid = data.get("newSessionId")
-                                if sid:
-                                    new_session_id = sid
-                                had_streaming_output = True
-                                _reset_timeout()
-                                result_text = data.get("result")
-                                if result_text:
-                                    t = asyncio.create_task(on_stream(str(result_text)))
-                                    result_futures.append(t)
-                            except Exception:
-                                pass
+                    parse_buffer += text
+                    while True:
+                        start_idx = parse_buffer.find(OUTPUT_START_MARKER)
+                        if start_idx == -1:
+                            break
+                        end_idx = parse_buffer.find(OUTPUT_END_MARKER, start_idx)
+                        if end_idx == -1:
+                            break
+                        json_str = parse_buffer[start_idx + len(OUTPUT_START_MARKER) : end_idx].strip()
+                        parse_buffer = parse_buffer[end_idx + len(OUTPUT_END_MARKER) :]
+                        try:
+                            data = json.loads(json_str)
+                        except Exception:
+                            continue
+
+                        sid = data.get("newSessionId")
+                        if sid:
+                            new_session_id = sid
+                        had_streaming_output = True
+                        _reset_timeout()
+                        if not result_future.done():
+                            result_future.set_result(data)
+                        if on_stream:
+                            result_text = data.get("result")
+                            if result_text:
+                                task = asyncio.create_task(on_stream(str(result_text)))
+                                result_futures.append(task)
                 else:
                     for line in text.strip().splitlines():
                         if line:
@@ -429,34 +488,68 @@ class ContainerBackend:
 
         stdout_task = asyncio.create_task(_read_stream(proc.stdout, True))
         stderr_task = asyncio.create_task(_read_stream(proc.stderr, False))
+        proc_wait_task = asyncio.create_task(proc.wait())
 
         try:
-            await asyncio.wait_for(proc.wait(), timeout=(timeout_ms / 1000) + 60)
+            if on_stream:
+                await asyncio.wait_for(proc_wait_task, timeout=(timeout_ms / 1000) + 60)
+            else:
+                done, _ = await asyncio.wait(
+                    {proc_wait_task, result_future},
+                    timeout=(timeout_ms / 1000) + 60,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    timed_out = True
+                    _stop_container()
+                    try:
+                        await asyncio.wait_for(proc_wait_task, timeout=15)
+                    except TimeoutError:
+                        if proc.returncode is None:
+                            proc.kill()
+                elif result_future in done:
+                    result_payload = result_future.result()
+                    if timeout_task:
+                        timeout_task.cancel()
+                        timeout_task = None
+                    try:
+                        _write_close_sentinel(self._data_dir, context.group_folder)
+                    except OSError:
+                        _stop_container()
+                    if not proc_wait_task.done():
+                        try:
+                            await asyncio.wait_for(proc_wait_task, timeout=15)
+                        except TimeoutError:
+                            _stop_container()
+                            try:
+                                await asyncio.wait_for(proc_wait_task, timeout=15)
+                            except TimeoutError:
+                                timed_out = True
         except TimeoutError:
             timed_out = True
-            try:
-                subprocess.run(_stop_container_cmd(container_name), capture_output=True, timeout=15)
-            except Exception:
-                if proc.returncode is None:
-                    proc.kill()
+            _stop_container()
 
         if timeout_task:
             timeout_task.cancel()
 
         await asyncio.sleep(0.1)
-        for t in (stdout_task, stderr_task):
-            if not t.done():
-                t.cancel()
+        for task in (stdout_task, stderr_task):
+            if not task.done():
+                task.cancel()
 
         if result_futures:
             await asyncio.gather(*result_futures, return_exceptions=True)
 
         stdout_text = "".join(stdout_buf)
+        _clear_ipc_input(self._data_dir, context.group_folder)
 
-        if timed_out:
+        if timed_out and result_payload is None:
             if had_streaming_output:
                 return BackendResult(status="success", text="", new_session_id=new_session_id)
             return BackendResult(status="error", text="", error=f"Container timed out after {timeout_ms}ms")
+
+        if result_payload is not None:
+            return _result_from_payload(result_payload, new_session_id)
 
         if proc.returncode != 0:
             return BackendResult(
@@ -478,11 +571,6 @@ class ContainerBackend:
                 lines = stdout_text.strip().splitlines()
                 json_str = lines[-1] if lines else "{}"
             data = json.loads(json_str)
-            return BackendResult(
-                status=data.get("status", "success"),
-                text=str(data.get("result", "")),
-                new_session_id=data.get("newSessionId"),
-                error=data.get("error"),
-            )
+            return _result_from_payload(data, new_session_id)
         except Exception as e:
             return BackendResult(status="error", text="", error=f"Failed to parse output: {e}")

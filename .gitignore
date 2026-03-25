@@ -35,6 +35,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.venv/
+*.egg-info/
 
 # TypeScript
 tsconfig.tsbuildinfo

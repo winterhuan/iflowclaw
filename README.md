@@ -1,164 +1,182 @@
 # iFlowClaw
 
-> 一个你能真正理解的 AI 助手
+轻量级个人 AI 助手，基于 Python 单进程实现，当前以飞书群聊为主要消息入口，支持多 Agent 后端、按群组隔离工作目录、任务调度和 MCP 工具桥接。
 
-iFlowClaw 是一个**轻量级的个人 AI 助手**，支持 **多后端**（iFlow CLI Python SDK / Claude Python SDK），单进程运行。
+## 当前状态
 
-## 特性
+当前仓库的真实实现以 `src/iflowclaw/` 为准。
 
-- **多后端** - 同时支持 iFlow 与 Claude（按群/按环境切换）
-- **飞书渠道** - 事件订阅（建议使用长连接模式）
-- **图片理解** - 支持图片消息识别
-- **任务调度** - 支持 cron、interval、once 三种调度方式
-- **群组管理** - 主群可管理所有群组，普通群独立运行
-- **OAuth 登录** - `iflow login` 一键认证
+- 运行时：Python 3.11+
+- 渠道：Feishu WebSocket 长连接
+- 后端：`iflow`、`claude`、`agno`
+- 执行模式：`direct`、`container`
+- 调度：`cron`、`interval`、`once`
+- 存储：SQLite
+- Agent 工具桥：stdio MCP + 本地 IPC
 
-## 安装
+说明：
 
-```bash
-git clone https://github.com/winterhuan/iflowclaw.git
-cd iflowclaw
-python3 -m pip install -e .
-```
+- `iflow` 和 `claude` 是主路径能力。
+- `agno` 和 `container` 已进入代码主线，但目前更适合视为实验性能力。
+- 根目录旧文档里曾描述过更早的“两后端直连”架构，现已不再准确。
 
-## 快速开始
+## 核心能力
 
-### 1. 创建飞书应用
-
-访问 https://open.feishu.cn/app → 创建企业自建应用
-
-### 2. 获取凭证并配置权限
-
-在「凭证与基础信息」复制 App ID 和 App Secret。
-
-在「权限管理」→「批量添加」，粘贴：
-
-```json
-{
-  "scopes": {
-    "tenant": [
-      "im:message",
-      "im:message.group_at_msg:readonly",
-      "im:message.p2p_msg:readonly",
-      "im:message:readonly",
-      "im:message:send_as_bot",
-      "im:resource"
-    ],
-    "user": []
-  }
-}
-```
-
-### 3. 启用机器人
-
-在「应用能力」→「机器人」中启用机器人能力。
-
-### 4. 配置本项目
-
-```bash
-./bin/iflowclaw setup   # 输入 App ID 和 Secret
-iflow login     # iFlow OAuth 认证
-```
-
-### 5. 启动服务
-
-```bash
-./bin/iflowclaw start
-```
-
-### 6. 配置事件订阅
-
-**重要：必须先启动服务再配置此步骤**
-
-在飞书开放平台「事件订阅」中：
-- 选择「使用长连接接收事件」
-- 添加事件：`im.message.receive_v1`
-
-### 7. 发布应用
-
-在「版本管理与发布」中创建版本并发布，等待审批后即可使用。
-
-## 启动方式
-
-| 命令 | 说明 |
-|------|------|
-| `./bin/iflowclaw start` | 后台运行（推荐生产使用） |
-| `./bin/iflowclaw run` | 前台运行（直接查看日志） |
-| `python3 -m iflowclaw run` | 直接前台运行 |
-
-## 全局命令
-
-安装后可执行以下命令将 `iflowclaw` 链接到全局，之后可在任意目录使用：
-
-```bash
-python3 -m pip install -e .
-iflowclaw setup    # 配置飞书凭证
-iflowclaw start    # 启动服务
-iflowclaw stop     # 停止服务
-iflowclaw status   # 查看状态
-iflowclaw logs     # 查看日志
-```
-
-## 管理命令
-
-或直接运行脚本：
-
-```bash
-./bin/iflowclaw setup
-./bin/iflowclaw start
-./bin/iflowclaw stop
-./bin/iflowclaw status
-./bin/iflowclaw logs
-```
-
-## 配置
-
-### 必需环境变量
-
-| 变量 | 说明 |
-|------|------|
-| `FEISHU_APP_ID` | 飞书 App ID |
-| `FEISHU_APP_SECRET` | 飞书 App Secret |
-
-### 可选配置
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `ASSISTANT_NAME` | `iFlow` | 助手名称（影响触发词） |
-| `AGENT_TIMEOUT` | `60000` | Agent 超时时间（ms） |
-| `MAX_CONCURRENT_AGENTS` | `5` | 最大并发 Agent 数 |
-| `LOG_LEVEL` | `info` | 日志等级 |
-| `TZ` | 系统时区 | 任务调度时区 |
-| `AGENT_BACKEND` | `iflow` | 默认后端：`iflow` / `claude` |
-| `IFLOW_MODEL` | 空 | iFlow 默认模型（可选） |
-| `CLAUDE_MODEL` | 空 | Claude 默认模型（可选） |
-| `ANTHROPIC_API_KEY` | 空 | Claude API Key（使用 claude 后端必须） |
+- 飞书消息接入与群聊触发词路由
+- 主群 / 普通群权限模型
+- 每群独立目录、独立会话、独立 IPC 空间
+- 多 Agent 后端切换
+- Agent 在运行时调用 MCP 工具发送消息、创建任务、管理任务、注册群组
+- 基于 `AGENTS.md` 和 `skills/` 的上下文与能力注入
 
 ## 项目结构
 
-```
+```text
 iflowclaw/
-├── bin/iflowclaw      # CLI 管理工具
-├── iflowclaw/         # Python 运行时
-├── groups/            # 群组目录
-│   ├── global/        # 全局共享上下文
-│   └── main/          # 主群目录
-├── data/              # 运行时数据
-├── logs/              # 日志文件
-└── store/             # SQLite 数据库
+├── src/iflowclaw/
+│   ├── cli.py                    # 服务入口与主循环
+│   ├── config.py                 # 配置加载
+│   ├── db.py                     # SQLite 持久化
+│   ├── router.py                 # 消息格式化与输出清洗
+│   ├── group_queue.py            # 按群串行执行
+│   ├── task_scheduler.py         # 调度扫描与运行记录
+│   ├── ipc.py                    # IPC 文件监听与分发
+│   ├── skills.py                 # skills 同步
+│   ├── agents/
+│   │   ├── runner.py             # 后端选择与统一运行入口
+│   │   ├── prompting.py          # AGENTS.md 系统提示词拼装
+│   │   ├── container_entry.py    # 容器内 Agent 入口
+│   │   └── backends/
+│   │       ├── iflow.py
+│   │       ├── claude.py
+│   │       ├── agno.py
+│   │       └── container.py
+│   ├── channels/
+│   │   ├── registry.py
+│   │   └── feishu.py
+│   └── mcps/
+│       └── ipc_mcp_stdio.py
+├── groups/
+│   ├── global/AGENTS.md
+│   ├── main/AGENTS.md
+│   └── <group>/AGENTS.md
+├── skills/                       # 项目级 skills 源目录
+├── docs/
+├── tests/                        # 默认 pytest 覆盖的单元测试
+├── tests_integration/            # 额外集成测试
+└── container/                    # 容器相关构建物
 ```
 
-## 开发
+## 运行流程
+
+```text
+Feishu message
+  -> channel handler
+  -> SQLite(messages/chats)
+  -> message loop
+  -> GroupQueue(按群串行 + 全局并发限制)
+  -> AgentRunner
+     -> direct backend / container backend
+  -> MCP stdio server
+  -> IPC files
+  -> host IPC watcher
+  -> send message / schedule task / register group
+```
+
+## 安装
+
+按需安装依赖：
 
 ```bash
-python3 -m compileall -q iflowclaw
+pip install -e .[iflow]
+pip install -e .[claude]
+pip install -e .[agno]
+pip install -e .[all]
+pip install -e .[dev]
 ```
 
-## 鸣谢
+## 启动
 
-- [NanoClaw](https://github.com/qwibitai/nanoclaw) - 架构灵感
-- [iFlow CLI](https://www.npmjs.com/package/@iflow-ai/iflow-cli) - SDK 和 OAuth 认证
+当前 CLI 入口只有 `run`：
 
-## 许可证
+```bash
+python -m iflowclaw run
+```
 
-MIT
+或者：
+
+```bash
+iflowclaw run
+```
+
+## 必需配置
+
+最少需要：
+
+- `FEISHU_APP_ID`
+- `FEISHU_APP_SECRET`
+
+常用配置：
+
+- `ASSISTANT_NAME`
+- `AGENT_BACKEND`
+- `DEFAULT_EXECUTION_MODE`
+- `IFLOW_MODEL`
+- `CLAUDE_MODEL`
+- `AGNO_MODEL`
+- `AGENT_TIMEOUT`
+- `IDLE_TIMEOUT`
+- `MAX_CONCURRENT_AGENTS`
+- `TZ`
+
+后端相关凭证：
+
+- Claude：`ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`
+- iFlow / Agno：`OPENAI_API_KEY` 与可选 `OPENAI_BASE_URL`
+
+## 群组与上下文
+
+- 每个注册群组对应一个 `groups/<folder>/`
+- 非主群会在系统提示词里自动拼接 `groups/global/AGENTS.md`
+- 主群可通过 MCP 工具注册新群组、查看可见群组、跨群调度任务
+- 项目级 `skills/` 会在运行前同步到不同后端的标准目录
+
+## 内置 MCP 工具
+
+当前内置工具：
+
+- `send_message`
+- `schedule_task`
+- `list_tasks`
+- `pause_task`
+- `resume_task`
+- `cancel_task`
+- `update_task`
+- `register_group`
+
+## 测试
+
+默认单元测试：
+
+```bash
+pytest
+```
+
+说明：
+
+- `pyproject.toml` 当前只把 `tests/` 设为默认测试目录。
+- `tests_integration/` 需要显式指定。
+- 容器和真实后端测试依赖额外环境与凭证。
+
+## 文档索引
+
+- [架构说明](docs/ARCHITECTURE.md)
+- [设计原则与范围](docs/REQUIREMENTS.md)
+- [安全模型](docs/SECURITY.md)
+- [记忆系统现状与规划](docs/MEMORY_SYSTEM_DESIGN.md)
+
+## 已知边界
+
+- 文档已按当前代码结构更新，但部分实验性能力仍在收敛中。
+- 容器运行链路、挂载安全策略和部分集成测试仍需要继续打磨。
+- 如果你要评估真实行为，请优先看 `src/iflowclaw/` 下实现，而不是旧提交中的说明。

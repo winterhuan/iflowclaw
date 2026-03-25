@@ -143,7 +143,6 @@ def build_config(backend: str, model: str | None) -> AppConfig:
         timezone=os.environ.get("TZ", "Asia/Shanghai"),
         default_backend=backend,
         default_execution_mode="direct",
-        iflow_model=model if backend == "iflow" else None,
         claude_model=model if backend == "claude" else None,
         agno_model=model if backend == "agno" else None,
         trigger_pattern=re.compile(rf"^@{escaped_name}\b", re.IGNORECASE),

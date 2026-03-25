@@ -10,7 +10,7 @@ import json
 import os
 import random
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +65,7 @@ def main() -> int:
             "text": text,
             "sender": sender,
             "groupFolder": GROUP_FOLDER,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         write_ipc_file(MESSAGES_DIR, data)
         return "Message sent."
@@ -103,7 +103,7 @@ def main() -> int:
             "context_mode": context_mode,
             "targetJid": target_group_jid or CHAT_JID,
             "createdBy": GROUP_FOLDER,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         write_ipc_file(TASKS_DIR, data)
         return f"Task scheduled: {schedule_type} - {schedule_value}"
@@ -134,7 +134,7 @@ def main() -> int:
             "taskId": task_id,
             "groupFolder": GROUP_FOLDER,
             "isMain": IS_MAIN,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         write_ipc_file(TASKS_DIR, data)
         return f"Task {task_id} pause requested."
@@ -147,7 +147,7 @@ def main() -> int:
             "taskId": task_id,
             "groupFolder": GROUP_FOLDER,
             "isMain": IS_MAIN,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         write_ipc_file(TASKS_DIR, data)
         return f"Task {task_id} resume requested."
@@ -160,7 +160,7 @@ def main() -> int:
             "taskId": task_id,
             "groupFolder": GROUP_FOLDER,
             "isMain": IS_MAIN,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         write_ipc_file(TASKS_DIR, data)
         return f"Task {task_id} cancellation requested."
@@ -192,7 +192,7 @@ def main() -> int:
             "taskId": task_id,
             "groupFolder": GROUP_FOLDER,
             "isMain": IS_MAIN,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         if prompt is not None:
             data["prompt"] = prompt
@@ -214,7 +214,7 @@ def main() -> int:
             "name": name,
             "folder": folder,
             "trigger": trigger,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         write_ipc_file(TASKS_DIR, data)
         return f'Group "{name}" registered.'

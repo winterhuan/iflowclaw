@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from .base import BackendContext, BackendResult, StreamCallback
@@ -85,6 +86,17 @@ class AgnoBackend:
             env=mcp_env,
         )
 
+        # 加载 skills
+        skills_obj = None
+        skills_dir = Path(context.group_dir) / "skills"
+        if skills_dir.is_dir():
+            try:
+                from agno.skills import LocalSkills, Skills
+
+                skills_obj = Skills(loaders=[LocalSkills(str(skills_dir))])
+            except Exception as e:
+                logger.debug("agno: failed to load skills: %s", e)
+
         text_parts: list[str] = []
         new_session_id: str | None = context.session_id
 
@@ -94,13 +106,17 @@ class AgnoBackend:
                     mcp_tools = MCPTools(session=session)
                     await mcp_tools.initialize()
 
-                    agent = Agent(
+                    agent_kwargs: dict[str, Any] = dict(
                         model=model_obj,
                         system_message=context.system_prompt,
                         session_id=context.session_id,
                         tools=[mcp_tools],
                         markdown=True,
                     )
+                    if skills_obj is not None:
+                        agent_kwargs["skills"] = skills_obj
+
+                    agent = Agent(**agent_kwargs)
 
                     if on_stream:
                         async for event in agent.arun(user_prompt, stream=True):

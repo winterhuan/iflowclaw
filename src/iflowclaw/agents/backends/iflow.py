@@ -11,8 +11,10 @@ logger = logging.getLogger(__name__)
 class IFlowBackend:
     name = "iflow"
 
-    def __init__(self, *, model: str | None = None) -> None:
+    def __init__(self, *, model: str | None = None, api_key: str | None = None, base_url: str | None = None) -> None:
         self._model = model
+        self._api_key = api_key
+        self._base_url = base_url
 
     async def run(
         self,
@@ -23,7 +25,7 @@ class IFlowBackend:
     ) -> BackendResult:
         try:
             from iflow_sdk import AssistantMessage, IFlowClient, IFlowOptions, TaskFinishMessage
-            from iflow_sdk.types import ApprovalMode, EnvVariable, McpServer
+            from iflow_sdk.types import ApprovalMode, AuthMethodInfo, EnvVariable, McpServer, SessionSettings
         except Exception as e:
             return BackendResult(status="error", text="", error=f"iflow-cli-sdk not installed: {e}")
 
@@ -39,19 +41,33 @@ class IFlowBackend:
             ],
         )
 
-        session_settings: dict[str, Any] = {}
-        if context.system_prompt:
-            session_settings["system_prompt"] = context.system_prompt
-
-        options = IFlowOptions(
-            auto_start_process=True,
-            cwd=context.group_dir,
-            timeout=context.timeout_s,
-            approval_mode=ApprovalMode.YOLO,
-            mcp_servers=[mcp_server],
-            session_id=context.session_id,
-            session_settings=session_settings,
+        session_settings = SessionSettings(
+            system_prompt=context.system_prompt or None,
         )
+
+        options_kwargs: dict[str, Any] = {
+            "auto_start_process": True,
+            "cwd": context.group_dir,
+            "timeout": context.timeout_s,
+            "approval_mode": ApprovalMode.YOLO,
+            "mcp_servers": [mcp_server],
+            "session_id": context.session_id,
+            "session_settings": session_settings,
+        }
+
+        # 认证和模型配置
+        if self._api_key or self._model:
+            auth_method_info: dict[str, Any] = {}
+            if self._api_key:
+                auth_method_info["api_key"] = self._api_key
+            if self._base_url:
+                auth_method_info["base_url"] = self._base_url
+            if self._model:
+                auth_method_info["model_name"] = self._model
+            options_kwargs["auth_method_id"] = "iflow"
+            options_kwargs["auth_method_info"] = AuthMethodInfo(**auth_method_info)
+
+        options = IFlowOptions(**options_kwargs)
 
         text_parts: list[str] = []
         new_session_id: str | None = None

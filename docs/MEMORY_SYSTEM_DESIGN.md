@@ -1,226 +1,130 @@
-# iFlowClaw 记忆功能设计文档
+# iFlowClaw 记忆系统现状与规划
 
-## 现状分析
+## 现状
 
-### 当前已有但未被充分利用的组件
+当前仓库里还没有独立的“长期记忆数据库”实现。
 
-1. **session_stats 表** - 记录会话统计信息（消息数、重置次数等）
-2. **session-history.ts** - 对话历史管理（保存/加载/格式化）
-3. **summary-generator.ts** - 摘要生成（使用 iFlow CLI）
+目前真正生效的上下文机制主要有三类：
 
-### 存在的问题
+### 1. 群组 AGENTS
 
-1. session-history 和 summary-generator 模块存在但未被主流程使用
-2. 没有结构化的记忆存储机制
-3. Agent 无法主动存取记忆
-4. 跨会话上下文传递依赖 session_id 复用
+来源：
 
-## 记忆系统设计
+- `groups/<folder>/AGENTS.md`
+- `groups/global/AGENTS.md`
 
-### 核心概念
+作用：
 
-基于项目 AGENTS.md 中的上下文：
+- 作为系统提示词的一部分注入
+- 适合放稳定规则、团队约定、长期背景信息
 
-```
-<internal>
-这部分内容不会发送给用户，用于内部思考和记录。
-</internal>
-```
+### 2. 会话续用
 
-这个模式表明 Agent 已经有内部思考机制，我们可以利用这个来：
-1. 让 Agent 自己决定什么时候保存重要信息
-2. 在内部思考中记录关键决策、用户偏好等
-3. 在后续对话中注入相关记忆
+会话 ID 会按 `group_folder` 保存在数据库里。
 
-### 架构设计
+作用：
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         iFlowClaw                               │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   对话消息   │  │  session_stats│  │      memories        │  │
-│  │   messages   │  │     表        │  │       表             │  │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
-│         │                   │                   │              │
-│         ▼                   ▼                   ▼              │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │              Memory Service (memory.ts)                  │  │
-│  │  - 保存记忆 (save_memory)                                │  │
-│  │  - 检索记忆 (search_memory)                              │  │
-│  │  - 更新记忆 (update_memory)                              │  │
-│  │  - 删除记忆 (delete_memory)                              │  │
-│  │  - 获取上下文 (get_memory_context)                       │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │              MCP Server (ipc-mcp-stdio.ts)               │  │
-│  │  - save_memory 工具                                      │  │
-│  │  - search_memory 工具                                    │  │
-│  │  - list_memories 工具                                    │  │
-│  │  - delete_memory 工具                                    │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                              │                                  │
-│                              ▼                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │               Agent Runner (agent-runner.ts)             │  │
-│  │  - 启动时注入记忆上下文                                   │  │
-│  │  - 消息处理时更新记忆                                     │  │
-│  │  - Session 切换时生成摘要                                 │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-```
+- 后端支持时，后续消息可复用之前的会话状态
+- 这是当前最接近“短中期记忆”的机制
 
-### 数据库表设计
+### 3. skills
 
-#### memories 表
+来源：
 
-```sql
-CREATE TABLE memories (
-  id TEXT PRIMARY KEY,
-  group_folder TEXT NOT NULL,
-  session_id TEXT,
-  category TEXT NOT NULL,      -- 'fact', 'preference', 'decision', 'task', 'summary'
-  key TEXT NOT NULL,           -- 记忆的键/主题
-  value TEXT NOT NULL,         -- 记忆的内容
-  importance INTEGER DEFAULT 1, -- 重要性 1-5
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  expires_at TEXT,             -- 过期时间（可选）
-  metadata TEXT                -- JSON 格式的额外元数据
-);
+- 项目级 `skills/`
 
-CREATE INDEX idx_memories_group ON memories(group_folder);
-CREATE INDEX idx_memories_category ON memories(category);
-CREATE INDEX idx_memories_key ON memories(key);
-CREATE INDEX idx_memories_created ON memories(created_at);
-```
+作用：
 
-#### memory_categories 说明
+- 给后端补充结构化能力说明
+- 通过模板变量把群组目录、全局目录、IPC 路径等注入 skill 文档
 
-- `fact` - 客观事实（如：用户的名字、公司信息）
-- `preference` - 用户偏好（如：喜欢简洁回复、使用中文）
-- `decision` - 重要决策（如：选择了某个方案）
-- `task` - 待办事项（如：明天要检查的事情）
-- `summary` - 会话摘要（由系统自动生成）
-- `context` - 上下文信息（当前项目状态等）
+## 当前局限
 
-### MCP 工具设计
+与真正的记忆系统相比，现状有几个明显限制：
 
-#### save_memory
+- 没有独立的 memory table
+- 没有结构化记忆写入与检索 API
+- 没有跨会话摘要生成
+- 没有显式“保存偏好 / 决策 / 待办”的工具
+- 主要依赖 `AGENTS.md` 和会话上下文维持长期信息
 
-```typescript
-{
-  name: 'save_memory',
-  description: '保存一条记忆。用于记录重要信息、用户偏好、决策结果等。记忆会在后续对话中自动提供上下文。',
-  parameters: {
-    key: string,        // 记忆的标识符，如 "user_name", "project_goal"
-    value: string,      // 记忆的内容
-    category: enum,     // 'fact' | 'preference' | 'decision' | 'task' | 'context'
-    importance?: number, // 1-5，默认为 3
-    expires_in_days?: number // 可选的过期天数
-  }
-}
-```
+这意味着：
 
-#### search_memory
+- 稳定背景信息适合放文档
+- 临时连续对话适合靠 session 续用
+- 复杂长期记忆目前还没有正式主链路
 
-```typescript
-{
-  name: 'search_memory',
-  description: '搜索记忆。根据关键词或类别查找之前保存的记忆。',
-  parameters: {
-    query?: string,     // 搜索关键词
-    category?: string,  // 按类别筛选
-    limit?: number      // 返回数量限制，默认 10
-  }
-}
-```
+## 为什么暂时这样设计
 
-#### list_memories
+当前项目优先级仍是：
 
-```typescript
-{
-  name: 'list_memories',
-  description: '列出当前群组的所有记忆。',
-  parameters: {
-    category?: string,  // 按类别筛选
-    limit?: number      // 返回数量限制，默认 20
-  }
-}
-```
+- 跑通多后端
+- 跑通群组隔离
+- 跑通任务调度
+- 跑通 MCP 工具桥
 
-#### delete_memory
+在这个阶段，先用 `AGENTS.md + session_id + skills` 组成“轻量记忆层”是符合项目复杂度目标的。
 
-```typescript
-{
-  name: 'delete_memory',
-  description: '删除一条记忆。',
-  parameters: {
-    key: string         // 记忆的键
-  }
-}
-```
+## 适合当前系统的记忆分层
 
-### 记忆注入机制
+### 稳定规则层
 
-在 Agent 启动时，自动将相关记忆注入到 system prompt 中：
+适合放在 `AGENTS.md`：
 
-```typescript
-function buildSystemPromptWithMemory(
-  basePrompt: string,
-  memories: Memory[],
-  recentSummary?: SessionSummary
-): string {
-  const parts = [basePrompt];
-  
-  // 添加相关记忆
-  if (memories.length > 0) {
-    parts.push('\n\n=== 历史记忆 ===');
-    memories.forEach(m => {
-      parts.push(`- [${m.category}] ${m.key}: ${m.value}`);
-    });
-  }
-  
-  // 添加最近的会话摘要
-  if (recentSummary) {
-    parts.push('\n\n=== 上次对话摘要 ===');
-    parts.push(recentSummary.summary);
-  }
-  
-  return parts.join('\n');
-}
-```
+- 回复风格
+- 团队信息
+- 长期流程约定
+- 项目固定背景
 
-### 自动摘要生成
+### 能力说明层
 
-当 session_stats 中的 messageCount 超过阈值（如 50）时：
-1. 调用 summary-generator 生成摘要
-2. 将摘要保存为 memory（category='summary'）
-3. 可选择性地重置会话
+适合放在 `skills/`：
 
-## 实现步骤
+- 固定命令说明
+- 调查步骤
+- 面向特定任务的操作手册
 
-1. **数据库层** - 添加 memories 表和相关函数
-2. **服务层** - 创建 memory.ts 服务模块
-3. **MCP 层** - 在 ipc-mcp-stdio.ts 中添加记忆工具
-4. **集成层** - 在 agent-runner.ts 中集成记忆注入
-5. **优化层** - 添加记忆检索算法、过期清理等
+### 短期上下文层
 
-## 参考项目
+适合由后端 session 续用承担：
 
-### OpenClaw / Claude 记忆功能
+- 最近一段会话的连续状态
+- 当前任务上下文
 
-参考 Claude 的记忆功能设计：
-- 让 AI 主动决定什么值得记住
-- 提供显式的记忆管理工具
-- 在上下文中自然地注入记忆
+## 后续规划方向
 
-### Mem0 / Zep
+如果要做正式记忆系统，建议沿以下方向逐步推进：
 
-参考向量记忆数据库的设计：
-- 语义搜索能力
-- 记忆的重要性评分
-- 自动过期和清理
+### 第一阶段
 
+先补最小可用记忆：
+
+- 新增 `memories` 表
+- 新增 MCP 工具：`save_memory`、`search_memory`、`list_memories`、`delete_memory`
+- 只支持按群组存储，不做向量检索
+
+### 第二阶段
+
+再补自动摘要：
+
+- 长会话摘要
+- 任务执行摘要
+- 会话切换摘要
+
+### 第三阶段
+
+最后再考虑更复杂能力：
+
+- 重要性评分
+- 过期策略
+- 语义检索
+- 不同后端之间的统一记忆注入策略
+
+## 当前建议
+
+在正式记忆系统落地前，推荐做法是：
+
+- 把长期规则写进 `groups/<folder>/AGENTS.md`
+- 把跨群共享规则写进 `groups/global/AGENTS.md`
+- 把高频操作说明写进 `skills/`
+- 不要把“记忆系统已实现”当成当前事实

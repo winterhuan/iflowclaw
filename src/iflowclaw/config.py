@@ -20,9 +20,10 @@ class BackendCredentials:
     anthropic_base_url: str = "https://api.anthropic.com"
     claude_oauth_token: str | None = None
 
-    # iFlow 和 Agno 后端（都使用 OpenAI 兼容 API）
+    # OpenAI 兼容 API（iFlow 和 Agno 后端共用）
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com"
+    openai_model: str | None = None
 
 
 @dataclass(slots=True)
@@ -49,7 +50,6 @@ class AppConfig:
     timezone: str
     default_backend: RuntimeBackend
     default_execution_mode: str
-    iflow_model: str | None
     claude_model: str | None
     agno_model: str | None
     trigger_pattern: re.Pattern[str]
@@ -69,7 +69,6 @@ def load_config(project_root: Path | None = None) -> AppConfig:
             "MAX_CONCURRENT_AGENTS",
             "AGENT_BACKEND",
             "DEFAULT_EXECUTION_MODE",
-            "IFLOW_MODEL",
             "CLAUDE_MODEL",
             "AGNO_MODEL",
             "CONTAINER_TIMEOUT",
@@ -79,8 +78,10 @@ def load_config(project_root: Path | None = None) -> AppConfig:
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_OAUTH_TOKEN",
             "OPENAI_API_KEY",
             "OPENAI_BASE_URL",
+            "OPENAI_MODEL",
         ],
         root,
     )
@@ -100,9 +101,10 @@ def load_config(project_root: Path | None = None) -> AppConfig:
     credentials = BackendCredentials(
         anthropic_api_key=_env("ANTHROPIC_API_KEY") or None,
         anthropic_base_url=_env("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
-        claude_oauth_token=_env("CLAUDE_CODE_OAUTH_TOKEN") or None,
+        claude_oauth_token=_env("CLAUDE_CODE_OAUTH_TOKEN") or _env("CLAUDE_OAUTH_TOKEN") or None,
         openai_api_key=_env("OPENAI_API_KEY") or None,
         openai_base_url=_env("OPENAI_BASE_URL", "https://api.openai.com"),
+        openai_model=_env("OPENAI_MODEL") or None,
     )
 
     return AppConfig(
@@ -128,7 +130,6 @@ def load_config(project_root: Path | None = None) -> AppConfig:
         timezone=timezone,
         default_backend=default_backend,
         default_execution_mode=default_execution_mode,
-        iflow_model=_env("IFLOW_MODEL"),
         claude_model=_env("CLAUDE_MODEL"),
         agno_model=_env("AGNO_MODEL"),
         trigger_pattern=re.compile(rf"^@{escaped_name}\b", re.IGNORECASE),

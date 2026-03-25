@@ -171,7 +171,7 @@ def store_message(message: NewMessage) -> None:
         )
         conn.execute(
             """
-            INSERT OR IGNORE INTO messages
+            INSERT OR REPLACE INTO messages
               (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -254,19 +254,33 @@ def get_messages_since(chat_jid: str, since_timestamp: str, assistant_name: str)
     ]
 
 
-def get_new_messages(since_timestamp: str, assistant_name: str, *, limit: int = 200) -> list[NewMessage]:
+def get_new_messages(since_timestamp: str, assistant_name: str, *, jids: list[str] | None = None, limit: int = 200) -> list[NewMessage]:
     conn = _ensure_conn()
     with _lock:
-        rows = conn.execute(
-            """
-            SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
-            FROM messages
-            WHERE timestamp > ?
-            ORDER BY timestamp ASC
-            LIMIT ?
-            """,
-            (since_timestamp or "", int(limit)),
-        ).fetchall()
+        if jids:
+            placeholders = ",".join("?" for _ in jids)
+            rows = conn.execute(
+                f"""
+                SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+                FROM messages
+                WHERE chat_jid IN ({placeholders})
+                  AND timestamp > ?
+                ORDER BY timestamp ASC
+                LIMIT ?
+                """,
+                [*jids, since_timestamp or "", int(limit)],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+                FROM messages
+                WHERE timestamp > ?
+                ORDER BY timestamp ASC
+                LIMIT ?
+                """,
+                (since_timestamp or "", int(limit)),
+            ).fetchall()
     return [
         NewMessage(
             id=row["id"],
@@ -320,6 +334,32 @@ def set_session(group_folder: str, session_id: str) -> None:
             (group_folder, session_id),
         )
         conn.commit()
+
+
+def get_registered_group(jid: str) -> RegisteredGroup | None:
+    """获取单个注册组"""
+    conn = _ensure_conn()
+    with _lock:
+        row = conn.execute(
+            """
+            SELECT jid, name, folder, trigger_pattern, added_at, requires_trigger, is_main, agent_config
+            FROM registered_groups
+            WHERE jid = ?
+            """,
+            (jid,),
+        ).fetchone()
+    if row is None:
+        return None
+    agent_config = _decode_agent_config(row["agent_config"])
+    return RegisteredGroup(
+        name=str(row["name"]),
+        folder=str(row["folder"]),
+        trigger=str(row["trigger_pattern"]),
+        added_at=str(row["added_at"]),
+        requires_trigger=bool(row["requires_trigger"]) if row["requires_trigger"] is not None else True,
+        is_main=bool(row["is_main"]) if row["is_main"] is not None else False,
+        agent_config=agent_config,
+    )
 
 
 def get_all_registered_groups() -> dict[str, RegisteredGroup]:
@@ -484,6 +524,7 @@ def set_task_status(task_id: str, status: str) -> None:
 def delete_task(task_id: str) -> None:
     conn = _ensure_conn()
     with _lock:
+        conn.execute("DELETE FROM task_run_logs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM scheduled_tasks WHERE id = ?", (task_id,))
         conn.commit()
 
@@ -611,6 +652,7 @@ def _decode_agent_config(raw: Any) -> AgentConfig | None:
         backend=data.get("backend"),
         model=data.get("model"),
         system_prompt=data.get("system_prompt"),
+        execution_mode=data.get("execution_mode"),
         metadata=data.get("metadata") or {},
     )
 

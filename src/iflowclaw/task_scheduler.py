@@ -13,9 +13,14 @@ from .types import ScheduledTask, TaskRunLog
 
 logger = get_logger(__name__)
 
+_scheduler_running = False
+
 
 def _parse_iso(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    if dt.tzinfo is not None:
+        return dt.astimezone(UTC)
+    return dt
 
 
 def _to_utc_iso(dt: datetime) -> str:
@@ -28,6 +33,9 @@ def compute_next_run(task: ScheduledTask, *, now_utc: datetime, timezone_name: s
 
     if task.schedule_type == "interval":
         interval_ms = int(task.schedule_value)
+        if interval_ms <= 0:
+            logger.warning("scheduler: invalid interval %dms for task %s, falling back to 60s", interval_ms, task.id)
+            interval_ms = 60_000
         interval = timedelta(milliseconds=interval_ms)
 
         if task.next_run:
@@ -58,21 +66,29 @@ async def start_scheduler_loop(
     enqueue_task: Callable[[ScheduledTask], Awaitable[None]],
     stop_event: asyncio.Event,
 ) -> None:
-    while not stop_event.is_set():
-        now = datetime.now(UTC)
-        now_iso = _to_utc_iso(now)
+    global _scheduler_running
+    if _scheduler_running:
+        logger.warning("scheduler: loop already running, skipping duplicate start")
+        return
+    _scheduler_running = True
+    try:
+        while not stop_event.is_set():
+            now = datetime.now(UTC)
+            now_iso = _to_utc_iso(now)
 
-        try:
-            due = get_due_tasks(now_iso)
-        except Exception as e:
-            logger.exception("scheduler: get_due_tasks failed: %s", e)
+            try:
+                due = get_due_tasks(now_iso)
+            except Exception as e:
+                logger.exception("scheduler: get_due_tasks failed: %s", e)
+                await asyncio.sleep(poll_interval_ms / 1000)
+                continue
+
+            for task in due:
+                await enqueue_task(task)
+
             await asyncio.sleep(poll_interval_ms / 1000)
-            continue
-
-        for task in due:
-            await enqueue_task(task)
-
-        await asyncio.sleep(poll_interval_ms / 1000)
+    finally:
+        _scheduler_running = False
 
 
 async def record_task_run(

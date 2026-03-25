@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from ..config import AppConfig
 from ..group_folder import resolve_group_folder_path, resolve_group_ipc_path
+from ..skills import sync_skills_for_backend
 from ..types import AgentConfig, AgentInput
 from .backends import (
     AgnoBackend,
@@ -23,9 +25,9 @@ _BACKEND_MAP = {
 }
 
 _DEFAULT_MODEL_ATTR = {
-    "iflow": "iflow_model",
+    "iflow": "openai_model",
     "claude": "claude_model",
-    "agno": "agno_model",
+    "agno": "openai_model",
     "container": "claude_model",
 }
 
@@ -35,29 +37,23 @@ def _resolve_execution_mode(
     config: AppConfig,
     is_main: bool,
 ) -> str:
-    """解析执行模式
-
-    优先级：
-    1. agent_config.execution_mode - 显式配置
-    2. is_main=True: 默认使用容器模式（除非明确指定direct）
-    3. is_main=False: 使用配置的default_execution_mode
-
-    注意：容器模式要求 Docker/Podman 可用，否则会回退到直连模式
-    """
     if agent_config.execution_mode:
         return agent_config.execution_mode
-
-    # 主群默认使用容器模式（除非明确配置为direct）
     if is_main:
-        # 如果默认执行模式是direct，则使用direct，否则使用container
         if config.default_execution_mode == "direct":
             return "direct"
         return "container"
-
-    # 非主群使用配置的模式，但如果配置为direct则使用container
     if config.default_execution_mode == "direct":
         return "container"
     return config.default_execution_mode
+
+
+def _uses_container_execution(
+    agent_config: AgentConfig,
+    config: AppConfig,
+    is_main: bool,
+) -> bool:
+    return _resolve_execution_mode(agent_config, config, is_main) == "container"
 
 
 class AgentRunner:
@@ -79,29 +75,14 @@ class AgentRunner:
         if agent_config.system_prompt:
             system_prompt = (system_prompt + "\n" if system_prompt else "") + agent_config.system_prompt
 
-        execution_mode = _resolve_execution_mode(agent_config, self._config, agent_input.is_main)
-
-        # 决定后端名称
-        if execution_mode == "container":
-            backend_name = "container"
-        else:
-            backend_name = agent_config.backend or self._config.default_backend
-
+        use_container = _uses_container_execution(agent_config, self._config, agent_input.is_main)
+        backend_name = "container" if use_container else (agent_config.backend or self._config.default_backend)
         timeout_ms = agent_config.timeout or self._config.agent_timeout_ms
 
-        # 容器内直接使用环境变量指定的路径
         container_group_dir = os.environ.get("IFLOWCLAW_GROUP_DIR")
         container_ipc_dir = os.environ.get("IFLOWCLAW_IPC_DIR")
-
-        if container_group_dir:
-            group_dir = container_group_dir
-        else:
-            group_dir = str(resolve_group_folder_path(self._config, agent_input.group_folder))
-
-        if container_ipc_dir:
-            ipc_dir = container_ipc_dir
-        else:
-            ipc_dir = str(resolve_group_ipc_path(self._config, agent_input.group_folder))
+        group_dir = container_group_dir or str(resolve_group_folder_path(self._config, agent_input.group_folder))
+        ipc_dir = container_ipc_dir or str(resolve_group_ipc_path(self._config, agent_input.group_folder))
 
         context = BackendContext(
             group_folder=agent_input.group_folder,
@@ -115,16 +96,17 @@ class AgentRunner:
         )
 
         backend_cls = _BACKEND_MAP.get(backend_name, IFlowBackend)
-        default_model_attr = _DEFAULT_MODEL_ATTR.get(backend_name, "iflow_model")
-        model = agent_config.model or getattr(self._config, default_model_attr)
+        container_backend = agent_config.backend or self._config.default_backend
+        if container_backend == "container":
+            container_backend = "claude"
+
+        if use_container:
+            default_model_attr = _DEFAULT_MODEL_ATTR.get(container_backend, "claude_model")
+        else:
+            default_model_attr = _DEFAULT_MODEL_ATTR.get(backend_name, "openai_model")
+        model = agent_config.model or getattr(self._config, default_model_attr, None) or getattr(self._config.credentials, default_model_attr, None)
 
         if backend_name == "container":
-            # 容器内使用的后端（可以是claude, iflow, agno）
-            container_backend = agent_config.backend or self._config.default_backend
-            if container_backend == "container":
-                # 如果默认后端也是container，回退到claude
-                container_backend = "claude"
-
             backend = backend_cls(
                 model=model,
                 backend=container_backend,
@@ -134,9 +116,33 @@ class AgentRunner:
                 container_timeout_ms=timeout_ms,
                 idle_timeout_ms=self._config.idle_timeout_ms,
                 credential_proxy_port=self._config.credential_proxy_port,
+                container_image=self._config.container_image,
+                assistant_name=self._config.assistant_name,
+                timezone=self._config.timezone,
+                credentials=self._config.credentials,
             )
         else:
-            backend = backend_cls(model=model)
+            if not os.environ.get("IFLOWCLAW_GROUP_DIR"):
+                target_dir = Path(group_dir)
+                global_dir_path = str((self._config.groups_dir / "global").resolve())
+                project_dir_path = str(self._config.project_root.resolve())
+                sync_skills_for_backend(
+                    backend_name,
+                    self._config.project_root,
+                    target_dir,
+                    group_dir=group_dir,
+                    global_dir=global_dir_path,
+                    ipc_dir=ipc_dir,
+                    project_dir=project_dir_path,
+                )
+            if backend_name == "iflow":
+                backend = backend_cls(
+                    model=model,
+                    api_key=self._config.credentials.openai_api_key,
+                    base_url=self._config.credentials.openai_base_url,
+                )
+            else:
+                backend = backend_cls(model=model)
 
         return await backend.run(
             user_prompt=user_prompt,
