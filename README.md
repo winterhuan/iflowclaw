@@ -85,7 +85,19 @@ Feishu message
 ## 安装
 
 ```bash
-# 安装全部后端
+# 使用 uv 安装为全局命令
+uv tool install -e ".[all]"
+
+# 或按需安装
+uv tool install -e ".[iflow]"
+uv tool install -e ".[claude]"
+uv tool install -e ".[agno]"      # Agno 后端（仅支持 OpenAI）
+
+# 如果只想同步项目环境，不安装全局命令
+uv sync --extra all
+uv run iflowclaw --help
+
+# 传统 pip 方式
 pip install -e ".[all]"
 
 # 或按需安装
@@ -95,7 +107,8 @@ pip install -e ".[agno]"       # Agno 后端（仅支持 OpenAI）
 pip install -e ".[dev]"        # 开发依赖
 ```
 
-安装后 `iflowclaw` 命令全局可用。
+使用 `uv tool install` 后，`iflowclaw` 会安装到 `uv` 的工具目录，并通过 `~/.local/bin` 暴露到 PATH。
+如果 `iflowclaw` 仍然找不到，请确认 `~/.local/bin` 已加入 shell 的 `PATH`。
 
 ## 快速开始
 

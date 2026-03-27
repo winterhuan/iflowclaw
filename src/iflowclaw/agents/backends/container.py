@@ -171,9 +171,34 @@ def _build_mounts(
         if global_dir.is_dir():
             mounts.append((str(global_dir), "/workspace/global", True))
 
-    sessions_dir = data_dir / "sessions" / group_folder / ".claude"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    settings_file = sessions_dir / "settings.json"
+    state_root = data_dir / "sessions" / group_folder
+    mounts.extend(_build_backend_state_mounts(project_root, state_root, group_dir, backend))
+
+    ipc_dir = data_dir / "ipc" / group_folder
+    for sub in ("messages", "tasks", "input"):
+        (ipc_dir / sub).mkdir(parents=True, exist_ok=True)
+    mounts.append((str(ipc_dir), "/workspace/ipc", False))
+
+    return mounts
+
+
+def _build_backend_state_mounts(
+    project_root: Path,
+    state_root: Path,
+    group_dir: Path,
+    backend: str,
+) -> list[tuple[str, str, bool]]:
+    state_root.mkdir(parents=True, exist_ok=True)
+    _sync_skills_for_container(project_root, state_root, group_dir, backend)
+
+    if backend != "claude":
+        # iFlow and Agno keep their persisted state under /workspace/group,
+        # which is already mounted above. They don't need a separate home mount.
+        return []
+
+    claude_dir = state_root / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    settings_file = claude_dir / "settings.json"
     if not settings_file.exists():
         settings_file.write_text(
             json.dumps(
@@ -189,21 +214,12 @@ def _build_mounts(
             + "\n",
             encoding="utf-8",
         )
-
-    _sync_skills_for_container(project_root, sessions_dir, group_dir, backend)
-    mounts.append((str(sessions_dir), "/home/node/.claude", False))
-
-    ipc_dir = data_dir / "ipc" / group_folder
-    for sub in ("messages", "tasks", "input"):
-        (ipc_dir / sub).mkdir(parents=True, exist_ok=True)
-    mounts.append((str(ipc_dir), "/workspace/ipc", False))
-
-    return mounts
+    return [(str(claude_dir), "/home/node/.claude", False)]
 
 
 def _sync_skills_for_container(
     project_root: Path,
-    sessions_dir: Path,
+    state_root: Path,
     group_dir: Path,
     backend: str,
 ) -> None:
@@ -217,7 +233,7 @@ def _sync_skills_for_container(
     )
 
     if backend == "claude":
-        sync_skills_for_backend("claude", project_root, sessions_dir.parent, **kwargs)
+        sync_skills_for_backend("claude", project_root, state_root, **kwargs)
     elif backend == "iflow":
         sync_skills_for_backend("iflow", project_root, group_dir, **kwargs)
     elif backend == "agno":

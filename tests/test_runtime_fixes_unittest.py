@@ -10,15 +10,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from iflowclaw.agents.backends.base import BackendContext, BackendResult
+from iflowclaw.agents.backends.base import BackendConfigError, BackendContext, BackendResult
 from iflowclaw.agents.backends.container import (
     OUTPUT_END_MARKER,
     OUTPUT_START_MARKER,
     ContainerBackend,
+    _build_mounts,
     _build_env_vars,
     _resolve_proxy_provider,
 )
-from iflowclaw.agents.backends.base import BackendConfigError
+from iflowclaw.agents.container_entry import build_config as build_container_config
 from iflowclaw.agents.runner import AgentRunner
 from iflowclaw.config import BackendCredentials, load_config
 from iflowclaw.credential_proxy import ProxyConfig, _apply_auth_headers, build_proxy_config_for_provider
@@ -109,6 +110,47 @@ class TestCredentialProxyHeaders(unittest.TestCase):
         self.assertEqual(proxy_config.auth_mode, "bearer")
         self.assertEqual(proxy_config.oauth_token, "openai-key")
         self.assertEqual(proxy_config.upstream_url, "https://openai.example/v1")
+
+
+class TestContainerEntryConfig(unittest.TestCase):
+    def test_build_config_preserves_openai_model_for_agno(self) -> None:
+        config = build_container_config("agno", "openai:gpt-4o-mini")
+
+        self.assertEqual(config.agno_model, "openai:gpt-4o-mini")
+        self.assertEqual(config.credentials.openai_model, "openai:gpt-4o-mini")
+
+
+class TestContainerMounts(unittest.TestCase):
+    def test_build_mounts_only_adds_claude_home_for_claude_backend(self) -> None:
+        with workspace_tmp_dir() as root:
+            project_root = root
+            data_dir = root / "data"
+            groups_dir = root / "groups"
+            (groups_dir / "team").mkdir(parents=True, exist_ok=True)
+            (groups_dir / "global").mkdir(parents=True, exist_ok=True)
+
+            with patch("iflowclaw.agents.backends.container._sync_skills_for_container"):
+                claude_mounts = _build_mounts("team", False, project_root, data_dir, groups_dir, "claude")
+                iflow_mounts = _build_mounts("team", False, project_root, data_dir, groups_dir, "iflow")
+                agno_mounts = _build_mounts("team", False, project_root, data_dir, groups_dir, "agno")
+
+            self.assertTrue(any(mount[1] == "/home/node/.claude" for mount in claude_mounts))
+            self.assertFalse(any(mount[1] == "/home/node/.claude" for mount in iflow_mounts))
+            self.assertFalse(any(mount[1] == "/home/node/.claude" for mount in agno_mounts))
+
+    def test_build_mounts_creates_claude_settings_only_for_claude_backend(self) -> None:
+        with workspace_tmp_dir() as root:
+            project_root = root
+            data_dir = root / "data"
+            groups_dir = root / "groups"
+            (groups_dir / "team").mkdir(parents=True, exist_ok=True)
+
+            with patch("iflowclaw.agents.backends.container._sync_skills_for_container"):
+                _build_mounts("team", False, project_root, data_dir, groups_dir, "iflow")
+                self.assertFalse((data_dir / "sessions" / "team" / ".claude" / "settings.json").exists())
+
+                _build_mounts("team", False, project_root, data_dir, groups_dir, "claude")
+                self.assertTrue((data_dir / "sessions" / "team" / ".claude" / "settings.json").exists())
 
 
 class _FakeContainerBackend:

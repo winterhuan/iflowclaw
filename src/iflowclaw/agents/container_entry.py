@@ -115,7 +115,7 @@ def build_config(backend: str, model: str | None) -> AppConfig:
         anthropic_base_url=os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
         openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com"),
-        openai_model=model if backend == "iflow" else None,
+        openai_model=model if backend in {"iflow", "agno"} else None,
     )
 
     # 注意：容器内只有一个群组目录，被挂载到 /workspace/group
@@ -222,7 +222,7 @@ async def main() -> None:
                 backend=backend,
                 model=model,
                 system_prompt=system_prompt,
-                execution_mode="direct",  # 容器内使用直连模式
+                execution_mode="direct",  # 已在容器内，直接调用真实后端，避免递归再起容器
             )
 
             result = await runner.run(
