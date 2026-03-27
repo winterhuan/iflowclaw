@@ -4,7 +4,15 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .base import BackendContext, BackendResult, StreamCallback
+from .base import (
+    BackendConfigError,
+    BackendContext,
+    BackendError,
+    BackendExecutionError,
+    BackendNotInstalledError,
+    BackendResult,
+    StreamCallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -12,36 +20,28 @@ logger = logging.getLogger(__name__)
 def _resolve_model(model_string: str | None) -> Any:
     if not model_string:
         return None
-    if ":" in model_string:
-        provider, model_id = model_string.split(":", 1)
-        provider = provider.lower()
+
+    normalized_model = model_string.strip()
+    if ":" in normalized_model:
+        provider, model_id = normalized_model.split(":", 1)
+        provider = provider.strip().lower()
+        model_id = model_id.strip()
     else:
-        provider, model_id = "openai", model_string
+        provider, model_id = "openai", normalized_model
+
+    if provider != "openai":
+        raise BackendConfigError("Agno backend only supports OpenAI models. Use `gpt-4o` or `openai:gpt-4o`.")
+    if not model_id:
+        raise BackendConfigError("Agno backend model cannot be empty")
+
     try:
-        if provider == "openai":
-            from agno.models.openai import OpenAIChat
+        from agno.models.openai import OpenAIChat
 
-            return OpenAIChat(id=model_id)
-        elif provider in ("anthropic", "claude"):
-            from agno.models.anthropic import Claude
-
-            return Claude(id=model_id)
-        elif provider == "google":
-            from agno.models.google import Gemini
-
-            return Gemini(id=model_id)
-        elif provider == "groq":
-            from agno.models.groq import Groq
-
-            return Groq(id=model_id)
-        elif provider == "ollama":
-            from agno.models.ollama import Ollama
-
-            return Ollama(id=model_id)
-        else:
-            raise ValueError(f"Unknown provider: {provider}")
+        return OpenAIChat(id=model_id)
+    except BackendConfigError:
+        raise
     except Exception as e:
-        raise ValueError(f"Failed to resolve model '{model_string}': {e}") from e
+        raise BackendConfigError(f"Failed to resolve model '{model_string}': {e}") from e
 
 
 def _build_mcp_env(context: BackendContext) -> dict[str, str]:
@@ -72,12 +72,12 @@ class AgnoBackend:
             from agno.tools.mcp import MCPTools
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
-        except Exception as e:
-            return BackendResult(status="error", text="", error=f"agno or mcp not installed: {e}")
+        except ImportError as e:
+            raise BackendNotInstalledError("agno", "agno") from e
 
         model_obj = _resolve_model(self._model)
         if model_obj is None:
-            return BackendResult(status="error", text="", error="No model configured for agno backend")
+            raise BackendConfigError("No model configured for agno backend")
 
         mcp_env = _build_mcp_env(context)
         server_params = StdioServerParameters(
@@ -133,13 +133,11 @@ class AgnoBackend:
                         new_session_id = agent.session_id or context.session_id
                     except Exception:
                         pass
+        except BackendError:
+            raise
         except Exception as e:
             logger.exception("agno backend failed: %s", e)
-            return BackendResult(
-                status="error",
-                text="".join(text_parts),
-                error=str(e),
-            )
+            raise BackendExecutionError(str(e), partial_output="".join(text_parts)) from e
 
         return BackendResult(
             status="success",

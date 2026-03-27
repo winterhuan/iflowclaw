@@ -3,7 +3,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .base import BackendContext, BackendResult, StreamCallback
+from .base import (
+    BackendContext,
+    BackendError,
+    BackendExecutionError,
+    BackendNotInstalledError,
+    BackendResult,
+    StreamCallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +70,8 @@ class ClaudeBackend:
                 ToolPermissionContext,
                 query,
             )
-        except Exception as e:
-            return BackendResult(status="error", text="", error=f"claude-agent-sdk not installed: {e}")
+        except ImportError as e:
+            raise BackendNotInstalledError("claude", "claude-agent-sdk") from e
 
         mcp_server_config = _build_mcp_server_config(context)
         allowed = _build_allowed_tools()
@@ -96,8 +103,10 @@ class ClaudeBackend:
                                 await on_stream(block.text)
                 if isinstance(message, ResultMessage):
                     break
+        except BackendError:
+            raise
         except Exception as e:
             logger.exception("claude agent sdk failed: %s", e)
-            return BackendResult(status="error", text="".join(text_parts), error=str(e))
+            raise BackendExecutionError(str(e), partial_output="".join(text_parts)) from e
 
         return BackendResult(status="success", text="".join(text_parts).strip())

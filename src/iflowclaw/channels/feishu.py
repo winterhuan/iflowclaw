@@ -61,7 +61,8 @@ class FeishuChannel(Channel):
 
         # lark-oapi ws.Client uses sync start() with its own event loop, run in dedicated thread
         # Need to create fresh event loop for lark-oapi to use (module-level loop is bound at import time)
-        started = threading.Event()
+        thread_ready = threading.Event()
+        startup_error: list[Exception] = []
 
         def run_ws() -> None:
             import lark_oapi.ws.client as ws_mod
@@ -70,20 +71,26 @@ class FeishuChannel(Channel):
             asyncio.set_event_loop(loop)
             # Patch the module-level loop that lark-oapi captured at import time
             ws_mod.loop = loop
+            thread_ready.set()
             try:
                 ws_client.start()
-                started.set()
             except Exception as e:
+                startup_error.append(e)
                 logger.error("ws.Client.start() failed: %s", e)
-                started.set()
             finally:
                 loop.close()
 
         self._ws_thread = threading.Thread(target=run_ws, daemon=True)
         self._ws_thread.start()
 
-        # Wait briefly for connection to establish
-        started.wait(timeout=5)
+        if not thread_ready.wait(timeout=5):
+            raise RuntimeError("Feishu WebSocket thread failed to initialize")
+
+        await asyncio.sleep(0.1)
+        if startup_error:
+            raise RuntimeError(f"Feishu WebSocket failed to start: {startup_error[0]}") from startup_error[0]
+        if self._ws_thread is None or not self._ws_thread.is_alive():
+            raise RuntimeError("Feishu WebSocket thread exited during startup")
         self._connected = True
 
     async def send_message(self, jid: str, text: str) -> None:
@@ -118,10 +125,15 @@ class FeishuChannel(Channel):
         self._connected = False
         if self._ws is not None:
             try:
-                await self._ws.close()
+                # lark-oapi ws.Client.close() is sync, not async
+                await asyncio.to_thread(self._ws.close)
             except Exception:
                 pass
             self._ws = None
+        # Wait for ws thread to finish (with timeout)
+        if self._ws_thread is not None and self._ws_thread.is_alive():
+            self._ws_thread.join(timeout=2.0)
+            self._ws_thread = None
 
     async def set_typing(self, jid: str, is_typing: bool) -> None:
         return
@@ -167,8 +179,10 @@ class FeishuChannel(Channel):
 
     async def _handle_event(self, data: Any) -> None:
         try:
-            message = getattr(data, "message", None) or data.get("message")
-            sender = getattr(data, "sender", None) or data.get("sender")
+            # lark-oapi P2ImMessageReceiveV1 has .event attribute containing message/sender
+            event = getattr(data, "event", data)
+            message = getattr(event, "message", None) or (event.get("message") if isinstance(event, dict) else None)
+            sender = getattr(event, "sender", None) or (event.get("sender") if isinstance(event, dict) else None)
             if not message or not sender:
                 return
 

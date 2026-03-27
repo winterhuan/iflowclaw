@@ -20,7 +20,6 @@ from .agents.runner import AgentRunner, _resolve_execution_mode
 from .channels.feishu import register_feishu_channel
 from .channels.registry import ChannelOpts, get_channel_factory, get_registered_channel_names
 from .config import AppConfig, load_config
-from .credential_proxy import start_credential_proxy
 from .db import (
     get_all_registered_groups,
     get_all_sessions,
@@ -30,6 +29,7 @@ from .db import (
     get_router_state,
     init_database,
     list_tasks,
+    reset_running_tasks,
     set_registered_group,
     set_router_state,
     set_session,
@@ -53,9 +53,13 @@ from .types import (
     AgentConfig,
     AgentInput,
     Channel,
+    MAIN_GROUP_FOLDER,
+    MAIN_GROUP_NAME,
     NewMessage,
     RegisteredGroup,
     ScheduledTask,
+    STATUS_ERROR,
+    STATUS_SUCCESS,
 )
 
 logger = get_logger(__name__)
@@ -119,13 +123,15 @@ class ServiceManager:
         self.runner: AgentRunner | None = None
         self.stop_event = asyncio.Event()
         self.proxy_server: Any = None
+        self._shutting_down = False
+        self._tasks: list[asyncio.Task] = []
 
     async def initialize(self) -> None:
         """Initialize database, load state, and set up components."""
         init_database(self.config)
+        reset_running_tasks()
         self.state = ServiceState.load()
         write_tasks_snapshot(self.config, list_tasks())
-        self.proxy_server = await start_credential_proxy(self._config)
         self._check_container_runtime()
         self._register_channels()
         self.queue = GroupQueue(
@@ -135,9 +141,14 @@ class ServiceManager:
         )
         self.runner = AgentRunner(self.config)
 
+    def _uses_container_runtime(self, agent_config: AgentConfig, is_main: bool) -> bool:
+        return _resolve_execution_mode(agent_config, self.config, is_main) == "container" or (
+            (agent_config.backend or self.config.default_backend) == "container"
+        )
+
     def _check_container_runtime(self) -> None:
-        if self.config.default_execution_mode == "container" or any(
-            _resolve_execution_mode(g.agent_config or AgentConfig(), self.config, bool(g.is_main)) == "container"
+        if self._uses_container_runtime(AgentConfig(), True) or any(
+            self._uses_container_runtime(g.agent_config or AgentConfig(), bool(g.is_main))
             for g in self.state.registered_groups.values()
         ):
             try:
@@ -192,8 +203,8 @@ class ServiceManager:
         if any(g.is_main for g in self.state.registered_groups.values()):
             return False
         group = RegisteredGroup(
-            name="main",
-            folder="main",
+            name=MAIN_GROUP_NAME,
+            folder=MAIN_GROUP_FOLDER,
             trigger=self.config.trigger_pattern.pattern,
             added_at=_utc_now_iso(),
             requires_trigger=False,
@@ -262,7 +273,7 @@ class ServiceManager:
                 self.queue.unregister_container(chat_jid)
             await ch.set_typing(chat_jid, False)
 
-        if output.status != "success" or not output.text:
+        if output.status != STATUS_SUCCESS:
             self.state.last_agent_ts[chat_jid] = previous_cursor
             self.state.save()
             return
@@ -271,8 +282,9 @@ class ServiceManager:
             self.state.sessions[group.folder] = output.new_session_id
             set_session(group.folder, output.new_session_id)
 
-        await self.send_message(chat_jid, output.text)
-        self._store_bot_message(chat_jid, output.text)
+        if output.text:
+            await self.send_message(chat_jid, output.text)
+            self._store_bot_message(chat_jid, output.text)
 
     def _needs_trigger_check(self, group: RegisteredGroup, is_main: bool, missed: list[NewMessage]) -> bool:
         if is_main or group.requires_trigger is False:
@@ -280,7 +292,7 @@ class ServiceManager:
         allow_cfg = load_sender_allowlist(self.config.sender_allowlist_path)
         return not any(
             self.config.trigger_pattern.search(m.content.strip())
-            and (m.is_from_me or is_trigger_allowed(group.folder, m.sender, allow_cfg))
+            and (m.is_from_me or is_trigger_allowed(m.chat_jid, m.sender, allow_cfg))
             for m in missed
         )
 
@@ -331,13 +343,14 @@ class ServiceManager:
             return
 
         user_prompt = task.prompt
+        session_id = self.state.sessions.get(task.group_folder) if task.context_mode == "group" else None
         output = await self.runner.run(
             agent_input=AgentInput(
                 prompt=user_prompt,
                 group_folder=task.group_folder,
                 chat_jid=task.chat_jid,
                 is_main=bool(group.is_main),
-                session_id=self.state.sessions.get(task.group_folder),
+                session_id=session_id,
                 is_scheduled_task=True,
                 assistant_name=self.config.assistant_name,
             ),
@@ -346,7 +359,11 @@ class ServiceManager:
         )
         finished = datetime.now(UTC)
 
-        if output.status == "success" and output.text:
+        if task.context_mode == "group" and output.status == STATUS_SUCCESS and output.new_session_id:
+            self.state.sessions[task.group_folder] = output.new_session_id
+            set_session(task.group_folder, output.new_session_id)
+
+        if output.status == STATUS_SUCCESS and output.text:
             await self.send_message(task.chat_jid, output.text)
             self._store_bot_message(task.chat_jid, output.text)
 
@@ -354,9 +371,9 @@ class ServiceManager:
             task,
             started_at=started,
             finished_at=finished,
-            status="success" if output.status == "success" else "error",
-            result=output.text if output.status == "success" else None,
-            error=output.error if output.status != "success" else None,
+            status=STATUS_SUCCESS if output.status == STATUS_SUCCESS else STATUS_ERROR,
+            result=output.text if output.status == STATUS_SUCCESS else None,
+            error=output.error if output.status != STATUS_SUCCESS else None,
             timezone_name=self.config.timezone,
         )
         write_tasks_snapshot(self.config, list_tasks())
@@ -367,7 +384,7 @@ class ServiceManager:
             task,
             started_at=started,
             finished_at=finished,
-            status="error",
+            status=STATUS_ERROR,
             result=None,
             error=error,
             timezone_name=self.config.timezone,
@@ -432,6 +449,8 @@ class ServiceManager:
         )
         msg_task = asyncio.create_task(self.message_loop())
 
+        self._tasks = [ipc_task, sched_task, msg_task]
+
         self.recover_pending_messages()
 
         loop = asyncio.get_running_loop()
@@ -441,13 +460,23 @@ class ServiceManager:
             except NotImplementedError:
                 signal.signal(sig, lambda s, f: asyncio.ensure_future(self.shutdown(signal.Signals(s))))
 
-        await asyncio.gather(ipc_task, sched_task, msg_task)
+        await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def shutdown(self, sig: signal.Signals) -> None:
+        if self._shutting_down:
+            return
+        self._shutting_down = True
         logger.info("Shutdown signal: %s", sig.name)
         self.stop_event.set()
-        self.proxy_server.close()
-        await self.queue.shutdown(timeout_s=10.0)
+
+        # Cancel all running tasks
+        for task in self._tasks:
+            task.cancel()
+
+        if self.proxy_server is not None:
+            self.proxy_server.close()
+        if self.queue:
+            await self.queue.shutdown(timeout_s=10.0)
         for ch in self.channels:
             try:
                 await ch.disconnect()
@@ -460,18 +489,236 @@ async def run_service(config: AppConfig) -> None:
     await manager.run()
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="iflowclaw")
-    sub = parser.add_subparsers(dest="cmd")
-    sub.add_parser("run")
-    args = parser.parse_args(argv)
+def cmd_init(config: AppConfig) -> int:
+    """Initialize configuration interactively."""
+    import os
 
-    config = load_config()
-    configure_logging(config.logs_dir)
+    env_path = config.project_root / ".env"
 
-    cmd = args.cmd or "run"
-    if cmd != "run":
-        raise SystemExit(2)
+    print("=" * 50)
+    print("iFlowClaw 配置初始化")
+    print("=" * 50)
+    print()
 
-    asyncio.run(run_service(config))
+    # 检查现有配置
+    existing = {}
+    if env_path.exists():
+        print(f"发现已有配置文件: {env_path}")
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    existing[key.strip()] = value.strip()
+        print("将保留已有配置，按 Enter 跳过\n")
+
+    # 收集配置
+    new_config = {}
+
+    # 必需配置
+    print("【必需配置】")
+    feishu_app_id = existing.get("FEISHU_APP_ID", "")
+    if feishu_app_id:
+        print(f"  FEISHU_APP_ID: {feishu_app_id[:8]}*** (已配置)")
+    else:
+        feishu_app_id = input("  飞书应用 ID (FEISHU_APP_ID): ").strip()
+    if feishu_app_id:
+        new_config["FEISHU_APP_ID"] = feishu_app_id
+
+    feishu_app_secret = existing.get("FEISHU_APP_SECRET", "")
+    if feishu_app_secret:
+        print(f"  FEISHU_APP_SECRET: {'*' * 16} (已配置)")
+    else:
+        import getpass
+
+        feishu_app_secret = getpass.getpass("  飞书应用密钥 (FEISHU_APP_SECRET): ").strip()
+    if feishu_app_secret:
+        new_config["FEISHU_APP_SECRET"] = feishu_app_secret
+
+    # 可选配置
+    print("\n【可选配置】(按 Enter 使用默认值)")
+    assistant_name = input(f"  助手名称 [{existing.get('ASSISTANT_NAME', 'iFlow')}]: ").strip()
+    if assistant_name:
+        new_config["ASSISTANT_NAME"] = assistant_name
+    elif "ASSISTANT_NAME" in existing:
+        new_config["ASSISTANT_NAME"] = existing["ASSISTANT_NAME"]
+
+    agent_backend = input(f"  默认后端 (iflow/claude/agno) [{existing.get('AGENT_BACKEND', 'iflow')}]: ").strip()
+    if agent_backend:
+        new_config["AGENT_BACKEND"] = agent_backend
+    elif "AGENT_BACKEND" in existing:
+        new_config["AGENT_BACKEND"] = existing["AGENT_BACKEND"]
+
+    log_level = input(f"  日志级别 (debug/info/warning/error) [{existing.get('LOG_LEVEL', 'info')}]: ").strip()
+    if log_level:
+        new_config["LOG_LEVEL"] = log_level
+    elif "LOG_LEVEL" in existing:
+        new_config["LOG_LEVEL"] = existing["LOG_LEVEL"]
+
+    timezone = input(f"  时区 [{existing.get('TZ', 'Asia/Shanghai')}]: ").strip()
+    if timezone:
+        new_config["TZ"] = timezone
+    elif "TZ" in existing:
+        new_config["TZ"] = existing["TZ"]
+
+    # 合并配置
+    final_config = {**existing, **new_config}
+
+    # 写入文件
+    with open(env_path, "w") as f:
+        f.write("# iFlowClaw 配置文件\n")
+        f.write("# 由 'iflowclaw init' 生成\n\n")
+        for key in sorted(final_config.keys()):
+            f.write(f"{key}={final_config[key]}\n")
+
+    print(f"\n配置已保存到: {env_path}")
+    print("\n下一步:")
+    print("  • 运行服务: iflowclaw run")
+    print("  • 安装为系统服务: iflowclaw install")
     return 0
+
+
+def cmd_install(config: AppConfig) -> int:
+    """Install as user systemd service."""
+    import os
+    import subprocess
+
+    service_name = "iflowclaw"
+    project_root = str(config.project_root)
+    python_bin = os.environ.get("PYTHON_BIN", "python3")
+    path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+
+    # 创建日志目录
+    config.logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # 检查 .env
+    env_path = config.project_root / ".env"
+    if not env_path.exists():
+        print("错误: 请先运行 'iflowclaw init' 创建配置")
+        return 1
+
+    # 生成服务文件内容
+    service_content = f"""[Unit]
+Description=iFlowClaw - Lightweight Personal AI Assistant
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={project_root}
+ExecStart={python_bin} -m iflowclaw run
+Restart=always
+RestartSec=10
+StandardOutput=append:{project_root}/logs/iflowclaw.log
+StandardError=append:{project_root}/logs/iflowclaw.log
+Environment=PYTHONPATH={project_root}
+Environment=PATH={path_env}
+
+[Install]
+WantedBy=default.target"""
+
+    # 用户级服务
+    service_dir = Path.home() / ".config" / "systemd" / "user"
+    service_dir.mkdir(parents=True, exist_ok=True)
+    service_file = service_dir / f"{service_name}.service"
+    service_file.write_text(service_content)
+    print(f"服务文件已创建: {service_file}")
+
+    # 重载并启用
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "enable", f"{service_name}.service"], check=True)
+    print("服务已启用（登录后自启）")
+
+    # 询问是否启动
+    answer = input("是否立即启动服务？[Y/n] ").strip().lower()
+    if answer != "n":
+        subprocess.run(["systemctl", "--user", "start", f"{service_name}.service"])
+        subprocess.run(["systemctl", "--user", "status", f"{service_name}.service", "--no-pager"])
+
+    print("\n服务管理:")
+    print(f"  iflowclaw start    # 启动服务")
+    print(f"  iflowclaw stop     # 停止服务")
+    print(f"  iflowclaw restart  # 重启服务")
+    print(f"  iflowclaw status   # 查看状态")
+    print(f"  iflowclaw logs     # 查看日志")
+
+    return 0
+
+
+def cmd_service(action: str, follow: bool = False) -> int:
+    """Manage systemd user service."""
+    import subprocess
+
+    service_name = "iflowclaw"
+
+    if action == "logs":
+        args = ["journalctl", "--user", "-u", f"{service_name}.service"]
+        if follow:
+            args.append("-f")
+        subprocess.run(args)
+    else:
+        subprocess.run(["systemctl", "--user", action, f"{service_name}.service"])
+        if action in ("start", "restart"):
+            subprocess.run(["systemctl", "--user", "status", f"{service_name}.service", "--no-pager"])
+
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="iflowclaw",
+        description="iFlowClaw - 轻量级个人 AI 助手",
+    )
+    sub = parser.add_subparsers(dest="cmd", help="可用命令")
+
+    # run 命令
+    sub.add_parser("run", help="前台运行服务")
+
+    # init 命令
+    sub.add_parser("init", help="初始化配置")
+
+    # install 命令
+    sub.add_parser("install", help="安装为用户服务")
+
+    # 服务管理命令
+    sub.add_parser("start", help="启动服务")
+    sub.add_parser("stop", help="停止服务")
+    sub.add_parser("restart", help="重启服务")
+    sub.add_parser("status", help="查看服务状态")
+
+    logs_parser = sub.add_parser("logs", help="查看服务日志")
+    logs_parser.add_argument("-f", "--follow", action="store_true", help="实时跟踪日志")
+
+    args = parser.parse_args(argv)
+    cmd = args.cmd or "run"
+
+    # 服务管理命令不需要加载配置
+    if cmd in ("start", "stop", "restart", "status"):
+        return cmd_service(cmd)
+    if cmd == "logs":
+        return cmd_service("logs", follow=getattr(args, "follow", False))
+
+    # 加载配置
+    try:
+        config = load_config()
+    except Exception as e:
+        print(f"配置加载失败: {e}")
+        print("请先运行: iflowclaw init")
+        return 1
+
+    configure_logging(config.logs_dir, level=config.log_level)
+
+    if cmd == "init":
+        return cmd_init(config)
+    elif cmd == "install":
+        return cmd_install(config)
+    elif cmd == "run":
+        # 检查必需配置
+        env_path = config.project_root / ".env"
+        if not env_path.exists():
+            print("未找到配置文件，请先运行: iflowclaw init")
+            return 1
+        asyncio.run(run_service(config))
+        return 0
+    else:
+        parser.print_help()
+        return 2

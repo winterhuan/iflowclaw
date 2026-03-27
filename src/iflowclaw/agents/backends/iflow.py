@@ -3,7 +3,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .base import BackendContext, BackendResult, StreamCallback
+from .base import (
+    BackendContext,
+    BackendError,
+    BackendExecutionError,
+    BackendNotInstalledError,
+    BackendResult,
+    StreamCallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +33,8 @@ class IFlowBackend:
         try:
             from iflow_sdk import AssistantMessage, IFlowClient, IFlowOptions, TaskFinishMessage
             from iflow_sdk.types import ApprovalMode, AuthMethodInfo, EnvVariable, McpServer, SessionSettings
-        except Exception as e:
-            return BackendResult(status="error", text="", error=f"iflow-cli-sdk not installed: {e}")
+        except ImportError as e:
+            raise BackendNotInstalledError("iflow", "iflow-cli-sdk") from e
 
         mcp_server = McpServer(
             name="iflowclaw",
@@ -92,14 +99,11 @@ class IFlowBackend:
                 sid = getattr(client, "session_id", None)
                 if isinstance(sid, str) and sid:
                     new_session_id = sid
+        except BackendError:
+            raise
         except Exception as e:
             logger.exception("iflow backend failed: %s", e)
-            return BackendResult(
-                status="error",
-                text="".join(text_parts),
-                error=str(e),
-                new_session_id=new_session_id,
-            )
+            raise BackendExecutionError(str(e), partial_output="".join(text_parts)) from e
 
         return BackendResult(
             status="success",

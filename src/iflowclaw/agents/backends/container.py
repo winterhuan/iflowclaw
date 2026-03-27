@@ -11,8 +11,17 @@ from pathlib import Path
 from typing import Any
 
 from ...config import BackendCredentials
-from ...credential_proxy import ProxyConfig, start_credential_proxy_with_proxy_config
-from .base import BackendContext, BackendResult, StreamCallback
+from ...credential_proxy import build_proxy_config_for_provider, start_credential_proxy_with_proxy_config
+from .base import (
+    BackendConfigError,
+    BackendContext,
+    BackendError,
+    BackendExecutionError,
+    BackendNotInstalledError,
+    BackendResult,
+    BackendTimeoutError,
+    StreamCallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +48,7 @@ def _get_runtime() -> str:
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
         if _detected_runtime is None:
-            raise RuntimeError("No container runtime (docker/podman) found")
+            raise BackendNotInstalledError("container", "docker or podman")
     return _detected_runtime
 
 
@@ -53,7 +62,58 @@ def _stop_container_cmd(name: str) -> list[str]:
     return [_get_runtime(), "stop", "-t", "1", name]
 
 
+def _stop_container_with_retry(name: str, max_retries: int = 3, retry_delay: float = 1.0) -> bool:
+    """Stop a container with retry logic.
+
+    Args:
+        name: Container name to stop
+        max_retries: Maximum number of retry attempts
+        retry_delay: Delay between retries in seconds
+
+    Returns:
+        True if container was stopped successfully, False otherwise
+    """
+    for attempt in range(max_retries):
+        try:
+            result = subprocess.run(
+                _stop_container_cmd(name),
+                capture_output=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                return True
+            logger.debug(
+                "Container stop attempt %d/%d failed for %s: returncode=%d",
+                attempt + 1,
+                max_retries,
+                name,
+                result.returncode,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Container stop attempt %d/%d timed out for %s",
+                attempt + 1,
+                max_retries,
+                name,
+            )
+        except Exception as e:
+            logger.warning(
+                "Container stop attempt %d/%d failed for %s: %s",
+                attempt + 1,
+                max_retries,
+                name,
+                e,
+            )
+
+        if attempt < max_retries - 1:
+            time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+
+    logger.error("Failed to stop container %s after %d attempts", name, max_retries)
+    return False
+
+
 def _cleanup_orphans() -> None:
+    """Clean up orphaned containers with retry logic."""
     try:
         result = subprocess.run(
             [_get_runtime(), "ps", "--filter", "name=iflowclaw-", "--format", "{{.Names}}"],
@@ -62,15 +122,28 @@ def _cleanup_orphans() -> None:
             timeout=10,
         )
         if result.returncode != 0:
+            logger.warning("Failed to list containers: returncode=%d", result.returncode)
             return
+
         orphans = [name.strip() for name in result.stdout.strip().splitlines() if name.strip()]
+        if not orphans:
+            return
+
+        stopped = []
+        failed = []
         for name in orphans:
-            try:
-                subprocess.run(_stop_container_cmd(name), capture_output=True, timeout=15)
-            except Exception:
-                pass
-        if orphans:
-            logger.info("Stopped %d orphaned containers: %s", len(orphans), orphans)
+            if _stop_container_with_retry(name):
+                stopped.append(name)
+            else:
+                failed.append(name)
+
+        if stopped:
+            logger.info("Stopped %d orphaned containers: %s", len(stopped), stopped)
+        if failed:
+            logger.warning("Failed to stop %d orphaned containers: %s", len(failed), failed)
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout while listing containers for cleanup")
     except Exception as e:
         logger.warning("Failed to clean up orphaned containers: %s", e)
 
@@ -154,35 +227,60 @@ def _sync_skills_for_container(
 def _build_env_vars(
     backend: str,
     credential_proxy_port: int,
-    credentials: BackendCredentials,
     timezone: str,
     model: str | None = None,
+    proxy_provider: str | None = None,
 ) -> list[str]:
     args = ["-e", f"TZ={timezone}"]
 
-    if backend == "claude":
+    if proxy_provider == "anthropic":
         args.extend(["-e", f"ANTHROPIC_BASE_URL=http://{CONTAINER_HOST_GATEWAY}:{credential_proxy_port}"])
         args.extend(["-e", "ANTHROPIC_API_KEY=placeholder"])
-        if model:
+    elif proxy_provider == "openai":
+        args.extend(["-e", f"OPENAI_BASE_URL=http://{CONTAINER_HOST_GATEWAY}:{credential_proxy_port}"])
+        args.extend(["-e", "OPENAI_API_KEY=placeholder"])
+
+    if model:
+        if backend == "claude":
             args.extend(["-e", f"CLAUDE_MODEL={model}"])
-    elif backend in ("iflow", "agno"):
-        if credentials.openai_api_key:
-            args.extend(["-e", f"OPENAI_API_KEY={credentials.openai_api_key}"])
-        if credentials.openai_base_url:
-            args.extend(["-e", f"OPENAI_BASE_URL={credentials.openai_base_url}"])
-        if model:
-            args.extend(["-e", f"IFLOW_MODEL={model}" if backend == "iflow" else f"AGNO_MODEL={model}"])
+        elif backend == "iflow":
+            args.extend(["-e", f"OPENAI_MODEL={model}"])
+        elif backend == "agno":
+            args.extend(["-e", f"AGNO_MODEL={model}"])
 
     return args
 
 
-def _build_proxy_config(credentials: BackendCredentials) -> ProxyConfig:
-    return ProxyConfig(
-        auth_mode="api-key" if credentials.anthropic_api_key else "oauth",
-        api_key=credentials.anthropic_api_key or "",
-        oauth_token=credentials.claude_oauth_token or "",
-        upstream_url=credentials.anthropic_base_url,
-    )
+def _validate_agno_model(model: str | None) -> None:
+    if not model or ":" not in model:
+        return
+    provider, _ = model.split(":", 1)
+    if provider.strip().lower() != "openai":
+        raise BackendConfigError("Agno backend only supports OpenAI models. Use `gpt-4o` or `openai:gpt-4o`.")
+
+
+def _resolve_proxy_provider(backend: str, model: str | None) -> str | None:
+    if backend == "claude":
+        return "anthropic"
+    if backend == "iflow":
+        return "openai"
+    if backend == "agno":
+        _validate_agno_model(model)
+        return "openai"
+    return None
+
+
+def _validate_proxy_credentials(proxy_provider: str, credentials: BackendCredentials, backend: str) -> None:
+    if proxy_provider == "anthropic":
+        if credentials.anthropic_api_key or credentials.claude_oauth_token:
+            return
+        raise BackendConfigError(
+            f"{backend} container backend requires ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN"
+        )
+    if proxy_provider == "openai":
+        if credentials.openai_api_key:
+            return
+        raise BackendConfigError(f"{backend} container backend requires OPENAI_API_KEY")
 
 
 def _build_args(
@@ -229,7 +327,7 @@ def _clear_ipc_input(data_dir: Path, group_folder: str) -> None:
     for path in ipc_input_dir.iterdir():
         if not path.is_file():
             continue
-        if path.name == "_close" or path.suffix == ".json" or path.name.endswith(".json.tmp"):
+        if path.name == "_close" or path.name.endswith(".json.tmp"):
             try:
                 path.unlink()
             except OSError:
@@ -287,24 +385,20 @@ class ContainerBackend:
     ) -> BackendResult:
         try:
             runtime = _get_runtime()
-        except Exception as e:
-            return BackendResult(status="error", text="", error=str(e))
+        except BackendError:
+            raise
 
+        proxy_provider = _resolve_proxy_provider(self._backend, self._model)
         proxy_server = None
-        if self._backend == "claude":
-            if not (self._credentials.anthropic_api_key or self._credentials.claude_oauth_token):
-                return BackendResult(
-                    status="error",
-                    text="",
-                    error="Claude container backend requires ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN",
-                )
+        if proxy_provider is not None:
+            _validate_proxy_credentials(proxy_provider, self._credentials, self._backend)
             try:
                 proxy_server = await start_credential_proxy_with_proxy_config(
-                    _build_proxy_config(self._credentials),
+                    build_proxy_config_for_provider(proxy_provider, self._credentials),
                     port=self._credential_proxy_port,
                 )
             except Exception as e:
-                return BackendResult(status="error", text="", error=f"Failed to start credential proxy: {e}")
+                raise BackendExecutionError(f"Failed to start credential proxy: {e}") from e
 
         _cleanup_orphans()
 
@@ -313,6 +407,7 @@ class ContainerBackend:
             user_prompt=user_prompt,
             context=context,
             on_stream=on_stream,
+            proxy_provider=proxy_provider,
             proxy_server=proxy_server,
         )
 
@@ -323,6 +418,7 @@ class ContainerBackend:
         user_prompt: str,
         context: BackendContext,
         on_stream: StreamCallback | None,
+        proxy_provider: str | None,
         proxy_server: asyncio.AbstractServer | None,
     ) -> BackendResult:
         try:
@@ -331,6 +427,7 @@ class ContainerBackend:
                 user_prompt=user_prompt,
                 context=context,
                 on_stream=on_stream,
+                proxy_provider=proxy_provider,
             )
         finally:
             if proxy_server:
@@ -347,6 +444,7 @@ class ContainerBackend:
         user_prompt: str,
         context: BackendContext,
         on_stream: StreamCallback | None,
+        proxy_provider: str | None,
     ) -> BackendResult:
         mounts = _build_mounts(
             context.group_folder,
@@ -360,9 +458,9 @@ class ContainerBackend:
         env_vars = _build_env_vars(
             self._backend,
             self._credential_proxy_port,
-            self._credentials,
             self._timezone,
             self._model,
+            proxy_provider,
         )
 
         safe_name = context.group_folder.replace("/", "-").replace("\\", "-")[:50]
@@ -546,17 +644,15 @@ class ContainerBackend:
         if timed_out and result_payload is None:
             if had_streaming_output:
                 return BackendResult(status="success", text="", new_session_id=new_session_id)
-            return BackendResult(status="error", text="", error=f"Container timed out after {timeout_ms}ms")
+            raise BackendTimeoutError(timeout_ms / 1000)
 
         if result_payload is not None:
             return _result_from_payload(result_payload, new_session_id)
 
         if proc.returncode != 0:
-            return BackendResult(
-                status="error",
-                text="",
-                error=f"Container exited with code {proc.returncode}",
-                new_session_id=new_session_id,
+            raise BackendExecutionError(
+                f"Container exited with code {proc.returncode}",
+                partial_output=stdout_text,
             )
 
         if on_stream:
@@ -573,4 +669,4 @@ class ContainerBackend:
             data = json.loads(json_str)
             return _result_from_payload(data, new_session_id)
         except Exception as e:
-            return BackendResult(status="error", text="", error=f"Failed to parse output: {e}")
+            raise BackendExecutionError(f"Failed to parse output: {e}") from e

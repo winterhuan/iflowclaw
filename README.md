@@ -84,54 +84,79 @@ Feishu message
 
 ## 安装
 
-按需安装依赖：
-
 ```bash
-pip install -e .[iflow]
-pip install -e .[claude]
-pip install -e .[agno]
-pip install -e .[all]
-pip install -e .[dev]
+# 安装全部后端
+pip install -e ".[all]"
+
+# 或按需安装
+pip install -e ".[iflow]"      # iFlow 后端
+pip install -e ".[claude]"     # Claude 后端
+pip install -e ".[agno]"       # Agno 后端（仅支持 OpenAI）
+pip install -e ".[dev]"        # 开发依赖
 ```
 
-## 启动
+安装后 `iflowclaw` 命令全局可用。
 
-当前 CLI 入口只有 `run`：
-
-```bash
-python -m iflowclaw run
-```
-
-或者：
+## 快速开始
 
 ```bash
+# 1. 初始化配置（交互式输入飞书凭证等）
+iflowclaw init
+
+# 2. 前台运行（测试）
 iflowclaw run
+
+# 3. 安装为用户服务（登录后自启）
+iflowclaw install
 ```
 
-## 必需配置
+## 命令一览
 
-最少需要：
+```bash
+iflowclaw init              # 初始化配置
+iflowclaw run               # 前台运行服务
 
-- `FEISHU_APP_ID`
-- `FEISHU_APP_SECRET`
+iflowclaw install           # 安装为用户服务
+iflowclaw start             # 启动服务
+iflowclaw stop              # 停止服务
+iflowclaw restart           # 重启服务
+iflowclaw status            # 查看服务状态
+iflowclaw logs              # 查看日志
+iflowclaw logs -f           # 实时跟踪日志
+```
 
-常用配置：
+## 配置说明
 
-- `ASSISTANT_NAME`
-- `AGENT_BACKEND`
-- `DEFAULT_EXECUTION_MODE`
-- `IFLOW_MODEL`
-- `CLAUDE_MODEL`
-- `AGNO_MODEL`
-- `AGENT_TIMEOUT`
-- `IDLE_TIMEOUT`
-- `MAX_CONCURRENT_AGENTS`
-- `TZ`
+配置文件：项目根目录 `.env`
 
-后端相关凭证：
+必需配置：
 
-- Claude：`ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`
-- iFlow / Agno：`OPENAI_API_KEY` 与可选 `OPENAI_BASE_URL`
+| 变量 | 说明 |
+|------|------|
+| `FEISHU_APP_ID` | 飞书应用 ID |
+| `FEISHU_APP_SECRET` | 飞书应用密钥 |
+
+常用可选配置：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `ASSISTANT_NAME` | `iFlow` | 助手名称，影响触发词 |
+| `AGENT_BACKEND` | `iflow` | 默认后端 (iflow/claude/agno/container) |
+| `EXECUTION_MODE` | `direct` | 执行模式 (direct/container) |
+| `OPENAI_MODEL` | - | iFlow 后端模型 |
+| `CLAUDE_MODEL` | - | Claude 后端模型 |
+| `AGNO_MODEL` | - | Agno 后端模型 (`gpt-4o` 或 `openai:gpt-4o`) |
+| `AGENT_TIMEOUT` | `300000` | Agent 超时（毫秒） |
+| `IDLE_TIMEOUT` | `180000` | 空闲关闭输入等待（毫秒） |
+| `MAX_CONCURRENT_AGENTS` | `5` | 全局并发 Agent 上限 |
+| `LOG_LEVEL` | `info` | 日志等级 |
+| `TZ` | 系统时区 | 任务调度时区 |
+
+后端凭证：
+
+- **Claude**：`ANTHROPIC_API_KEY` 或 `CLAUDE_CODE_OAUTH_TOKEN`
+- **iFlow**：运行 `iflow login` 后 SDK 自动读取 `~/.iflow/settings.json`
+- **Agno**：设置 `OPENAI_API_KEY`，可选 `OPENAI_BASE_URL`
 
 ## 群组与上下文
 

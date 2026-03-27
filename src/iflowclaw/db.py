@@ -4,16 +4,85 @@ import json
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator
 
 from .config import AppConfig
 from .group_folder import is_valid_group_folder
 from .types import AgentConfig, AvailableGroup, ChatInfo, NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog
 
-_conn: sqlite3.Connection | None = None
+
+class DatabaseConnectionManager:
+    """Manages SQLite database connections with thread safety and health checks."""
+
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+        self._conn: sqlite3.Connection | None = None
+        self._lock = threading.RLock()
+        self._local = threading.local()
+
+    def _create_connection(self) -> sqlite3.Connection:
+        """Create a new database connection with proper settings."""
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA busy_timeout=5000;")  # 5 second timeout for locks
+        return conn
+
+    def get_connection(self) -> sqlite3.Connection:
+        """Get the database connection, creating if necessary."""
+        with self._lock:
+            if self._conn is None:
+                self._conn = self._create_connection()
+            return self._conn
+
+    def is_healthy(self) -> bool:
+        """Check if the connection is still valid."""
+        try:
+            conn = self.get_connection()
+            conn.execute("SELECT 1")
+            return True
+        except sqlite3.Error:
+            return False
+
+    def reconnect(self) -> sqlite3.Connection:
+        """Close existing connection and create a new one."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
+            self._conn = self._create_connection()
+            return self._conn
+
+    @contextmanager
+    def transaction(self) -> Generator[sqlite3.Connection, None, None]:
+        """Context manager for database transactions with automatic rollback on error."""
+        conn = self.get_connection()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    def close(self) -> None:
+        """Close the database connection."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
+                self._conn = None
+
+
+_db_manager: DatabaseConnectionManager | None = None
 _lock = threading.RLock()
 
 
@@ -22,25 +91,27 @@ def _utc_now_iso() -> str:
 
 
 def _ensure_conn() -> sqlite3.Connection:
-    if _conn is None:
+    if _db_manager is None:
         raise RuntimeError("Database not initialized")
-    return _conn
+    return _db_manager.get_connection()
+
+
+def get_db_manager() -> DatabaseConnectionManager:
+    """Get the database connection manager."""
+    if _db_manager is None:
+        raise RuntimeError("Database not initialized")
+    return _db_manager
 
 
 def init_database(config: AppConfig, *, in_memory: bool = False) -> None:
-    global _conn
+    global _db_manager
     db_path = ":memory:" if in_memory else str((config.store_dir / "messages.db").resolve())
     if not in_memory:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-
-    with _lock:
-        _conn = conn
-        _create_schema(conn)
+    _db_manager = DatabaseConnectionManager(db_path)
+    conn = _db_manager.get_connection()
+    _create_schema(conn)
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -502,6 +573,21 @@ def list_tasks(group_folder: str | None = None) -> list[ScheduledTask]:
     return [_row_to_task(r) for r in rows]
 
 
+def get_task(task_id: str) -> ScheduledTask | None:
+    conn = _ensure_conn()
+    with _lock:
+        row = conn.execute(
+            """
+            SELECT id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode,
+                   next_run, last_run, last_result, status, created_at
+            FROM scheduled_tasks
+            WHERE id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+    return None if row is None else _row_to_task(row)
+
+
 def get_due_tasks(now_iso: str) -> list[ScheduledTask]:
     conn = _ensure_conn()
     with _lock:
@@ -518,6 +604,39 @@ def get_due_tasks(now_iso: str) -> list[ScheduledTask]:
             (now_iso,),
         ).fetchall()
     return [_row_to_task(r) for r in rows]
+
+
+def claim_due_tasks(now_iso: str) -> list[ScheduledTask]:
+    conn = _ensure_conn()
+    with _lock:
+        rows = conn.execute(
+            """
+            SELECT id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode,
+                   next_run, last_run, last_result, status, created_at
+            FROM scheduled_tasks
+            WHERE status = 'active'
+              AND next_run IS NOT NULL
+              AND next_run <= ?
+            ORDER BY next_run ASC
+            """,
+            (now_iso,),
+        ).fetchall()
+        if rows:
+            task_ids = [str(row["id"]) for row in rows]
+            placeholders = ",".join("?" for _ in task_ids)
+            conn.execute(
+                f"UPDATE scheduled_tasks SET status = 'running' WHERE id IN ({placeholders})",
+                task_ids,
+            )
+            conn.commit()
+    return [_row_to_task(r) for r in rows]
+
+
+def reset_running_tasks() -> None:
+    conn = _ensure_conn()
+    with _lock:
+        conn.execute("UPDATE scheduled_tasks SET status = 'active' WHERE status = 'running'")
+        conn.commit()
 
 
 def set_task_status(task_id: str, status: str) -> None:

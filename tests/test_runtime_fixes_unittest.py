@@ -11,10 +11,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 from iflowclaw.agents.backends.base import BackendContext, BackendResult
-from iflowclaw.agents.backends.container import OUTPUT_END_MARKER, OUTPUT_START_MARKER, ContainerBackend
+from iflowclaw.agents.backends.container import (
+    OUTPUT_END_MARKER,
+    OUTPUT_START_MARKER,
+    ContainerBackend,
+    _build_env_vars,
+    _resolve_proxy_provider,
+)
+from iflowclaw.agents.backends.base import BackendConfigError
 from iflowclaw.agents.runner import AgentRunner
 from iflowclaw.config import BackendCredentials, load_config
-from iflowclaw.credential_proxy import ProxyConfig, _apply_auth_headers
+from iflowclaw.credential_proxy import ProxyConfig, _apply_auth_headers, build_proxy_config_for_provider
+from iflowclaw.group_queue import GroupQueue
 from iflowclaw.types import AgentConfig, AgentInput
 
 _TEST_ROOT = Path(__file__).resolve().parent / ".tmp_runtime_fixes"
@@ -74,6 +82,33 @@ class TestCredentialProxyHeaders(unittest.TestCase):
 
         self.assertEqual(headers["authorization"], "Bearer oauth-token")
         self.assertNotIn("x-api-key", headers)
+
+    def test_apply_auth_headers_uses_bearer_mode(self) -> None:
+        headers = {"authorization": "Bearer stale", "x-api-key": "stale"}
+        proxy_config = ProxyConfig(
+            auth_mode="bearer",
+            api_key="",
+            oauth_token="openai-key",
+            upstream_url="https://api.openai.com",
+        )
+
+        _apply_auth_headers(headers, proxy_config)
+
+        self.assertEqual(headers["authorization"], "Bearer openai-key")
+        self.assertNotIn("x-api-key", headers)
+
+    def test_build_proxy_config_for_openai_provider(self) -> None:
+        proxy_config = build_proxy_config_for_provider(
+            "openai",
+            BackendCredentials(
+                openai_api_key="openai-key",
+                openai_base_url="https://openai.example/v1",
+            ),
+        )
+
+        self.assertEqual(proxy_config.auth_mode, "bearer")
+        self.assertEqual(proxy_config.oauth_token, "openai-key")
+        self.assertEqual(proxy_config.upstream_url, "https://openai.example/v1")
 
 
 class _FakeContainerBackend:
@@ -137,9 +172,41 @@ class TestContainerRunnerWiring(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(_FakeContainerBackend.init_kwargs["timezone"], "UTC")
             self.assertEqual(_FakeContainerBackend.init_kwargs["credentials"].openai_api_key, "openai-key")
 
+    async def test_runner_supports_container_as_default_backend(self) -> None:
+        with workspace_tmp_dir() as root:
+            (root / "store").mkdir(parents=True, exist_ok=True)
+            (root / "groups" / "test_group").mkdir(parents=True, exist_ok=True)
+            (root / "data" / "ipc" / "test_group").mkdir(parents=True, exist_ok=True)
+            os.environ["FEISHU_APP_ID"] = "test_id"
+            os.environ["FEISHU_APP_SECRET"] = "test_secret"
+
+            config = load_config(root)
+            config.default_backend = "container"
+            config.claude_model = "sonnet"
+
+            runner = AgentRunner(config)
+            agent_input = AgentInput(
+                prompt="hello",
+                group_folder="test_group",
+                chat_jid="feishu:test",
+                is_main=True,
+            )
+
+            with patch.dict("iflowclaw.agents.runner._BACKEND_MAP", {"container": _FakeContainerBackend}):
+                result = await runner.run(
+                    agent_input=agent_input,
+                    agent_config=AgentConfig(),
+                    user_prompt="hello",
+                )
+
+            self.assertEqual(result.status, "success")
+            self.assertIsNotNone(_FakeContainerBackend.init_kwargs)
+            self.assertEqual(_FakeContainerBackend.init_kwargs["backend"], "claude")
+            self.assertEqual(_FakeContainerBackend.init_kwargs["model"], "sonnet")
+
 
 class TestContainerBackendLifecycle(unittest.IsolatedAsyncioTestCase):
-    async def test_run_container_returns_after_first_output_and_cleans_ipc(self) -> None:
+    async def test_run_container_returns_after_first_output_and_preserves_unconsumed_ipc(self) -> None:
         with workspace_tmp_dir() as root:
             data_dir = root / "data"
             groups_dir = root / "groups"
@@ -235,6 +302,7 @@ class TestContainerBackendLifecycle(unittest.IsolatedAsyncioTestCase):
                     user_prompt="hello",
                     context=context,
                     on_stream=None,
+                    proxy_provider="openai",
                 )
 
             self.assertEqual(result.status, "success")
@@ -243,4 +311,111 @@ class TestContainerBackendLifecycle(unittest.IsolatedAsyncioTestCase):
             self.assertIn("proc", proc_holder)
             self.assertEqual(proc_holder["proc"].wait_calls, 1)
             self.assertFalse((input_dir / "_close").exists())
-            self.assertFalse((input_dir / "pending.json").exists())
+            self.assertTrue((input_dir / "pending.json").exists())
+
+    async def test_iflow_container_backend_starts_openai_proxy(self) -> None:
+        backend = ContainerBackend(
+            backend="iflow",
+            credentials=BackendCredentials(
+                openai_api_key="openai-key",
+                openai_base_url="https://openai.example/v1",
+            ),
+        )
+        context = BackendContext(
+            group_folder="test_group",
+            chat_jid="feishu:test",
+            is_main=False,
+            session_id=None,
+            group_dir="/tmp/group",
+            ipc_dir="/tmp/ipc",
+            system_prompt=None,
+            timeout_s=5.0,
+        )
+        captured: dict[str, object] = {}
+
+        async def _fake_start_proxy(proxy_config, *, port, host="127.0.0.1"):  # noqa: ANN001
+            captured["proxy_config"] = proxy_config
+            captured["port"] = port
+            captured["host"] = host
+
+            class _FakeServer:
+                def close(self) -> None:
+                    captured["closed"] = True
+
+                async def wait_closed(self) -> None:
+                    captured["wait_closed"] = True
+
+            return _FakeServer()
+
+        async def _fake_run_with_cleanup(**kwargs):  # noqa: ANN003
+            captured["proxy_provider"] = kwargs["proxy_provider"]
+            return BackendResult(status="success", text="ok")
+
+        with (
+            patch("iflowclaw.agents.backends.container._get_runtime", return_value="docker"),
+            patch("iflowclaw.agents.backends.container._cleanup_orphans"),
+            patch(
+                "iflowclaw.agents.backends.container.start_credential_proxy_with_proxy_config",
+                new=_fake_start_proxy,
+            ),
+            patch.object(backend, "_run_with_cleanup", new=_fake_run_with_cleanup),
+        ):
+            result = await backend.run(user_prompt="hello", context=context)
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(captured["proxy_provider"], "openai")
+        proxy_config = captured["proxy_config"]
+        self.assertEqual(proxy_config.auth_mode, "bearer")
+        self.assertEqual(proxy_config.oauth_token, "openai-key")
+        self.assertEqual(proxy_config.upstream_url, "https://openai.example/v1")
+
+
+class TestContainerProxyHelpers(unittest.TestCase):
+    def test_resolve_proxy_provider_for_container_backends(self) -> None:
+        self.assertEqual(_resolve_proxy_provider("claude", "sonnet"), "anthropic")
+        self.assertEqual(_resolve_proxy_provider("iflow", "gpt-4o"), "openai")
+        self.assertEqual(_resolve_proxy_provider("agno", "openai:gpt-4o-mini"), "openai")
+        self.assertEqual(_resolve_proxy_provider("agno", "gpt-4o-mini"), "openai")
+
+    def test_resolve_proxy_provider_rejects_non_openai_agno_models(self) -> None:
+        with self.assertRaises(BackendConfigError):
+            _resolve_proxy_provider("agno", "anthropic:claude-sonnet")
+
+        with self.assertRaises(BackendConfigError):
+            _resolve_proxy_provider("agno", "google:gemini-2.0-flash")
+
+    def test_build_env_vars_routes_openai_backends_through_proxy(self) -> None:
+        env_vars = _build_env_vars(
+            "iflow",
+            3001,
+            "UTC",
+            "gpt-4o",
+            "openai",
+        )
+
+        self.assertIn("OPENAI_BASE_URL=http://host.docker.internal:3001", env_vars)
+        self.assertIn("OPENAI_API_KEY=placeholder", env_vars)
+        self.assertIn("OPENAI_MODEL=gpt-4o", env_vars)
+
+    def test_build_env_vars_routes_agno_through_openai_proxy(self) -> None:
+        env_vars = _build_env_vars(
+            "agno",
+            3001,
+            "UTC",
+            "openai:gpt-4o-mini",
+            "openai",
+        )
+
+        self.assertIn("OPENAI_BASE_URL=http://host.docker.internal:3001", env_vars)
+        self.assertIn("OPENAI_API_KEY=placeholder", env_vars)
+        self.assertIn("AGNO_MODEL=openai:gpt-4o-mini", env_vars)
+
+
+class TestGroupQueueContainerInput(unittest.TestCase):
+    def test_send_message_does_not_push_live_input_to_container_sessions(self) -> None:
+        queue = GroupQueue(max_concurrent=1, idle_timeout_ms=1_000)
+        queue.register_container("feishu:test")
+
+        result = queue.send_message("feishu:test", "<context>hello</context>")
+
+        self.assertFalse(result)

@@ -16,6 +16,7 @@ from ..types import AgentConfig, AgentInput
 from .backends import (
     AgnoBackend,
     BackendContext,
+    BackendError,
     BackendResult,
     ClaudeBackend,
     ContainerBackend,
@@ -186,4 +187,11 @@ class AgentRunner:
         model = self._resolve_model(agent_config, backend_name, use_container)
         backend = self._create_backend(backend_name, model, group_dir, ipc_dir, agent_config, use_container)
 
-        return await backend.run(user_prompt=user_prompt, context=context)
+        try:
+            return await backend.run(user_prompt=user_prompt, context=context)
+        except BackendError as e:
+            return BackendResult(
+                status="error",
+                text=e.partial_output,
+                error=str(e),
+            )

@@ -191,7 +191,7 @@ def validate_additional_mounts(
         host_path = mount.get("hostPath") or mount.get("host_path", "")
         container_path = mount.get("containerPath") or mount.get("container_path")
         readonly = mount.get("readonly", True)
-        result = validate_mount(host_path, container_path, not readonly, is_main)
+        result = validate_mount(host_path, container_path, readonly, is_main)
         if result.allowed and result.real_host_path and result.resolved_container_path:
             validated.append(
                 (

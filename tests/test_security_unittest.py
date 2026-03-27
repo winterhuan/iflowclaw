@@ -9,7 +9,13 @@ import unittest
 from pathlib import Path
 
 from iflowclaw.config import load_config
-from iflowclaw.credential_proxy import ProxyConfig, build_proxy_config, detect_auth_mode
+from iflowclaw.credential_proxy import (
+    ProxyConfig,
+    build_proxy_config,
+    build_proxy_config_for_provider,
+    detect_auth_mode,
+    rewrite_request_line_for_upstream,
+)
 from iflowclaw.mount_security import (
     DEFAULT_BLOCKED_PATTERNS,
     MountValidationResult,
@@ -71,6 +77,22 @@ class TestCredentialProxy(unittest.TestCase):
             self.assertEqual(proxy_config.api_key, "sk-test-123")
             self.assertEqual(proxy_config.upstream_url, "https://custom.api.com")
 
+    def test_build_proxy_config_for_openai_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "store").mkdir(parents=True, exist_ok=True)
+            os.environ["FEISHU_APP_ID"] = "test_id"
+            os.environ["FEISHU_APP_SECRET"] = "test_secret"
+            os.environ["OPENAI_API_KEY"] = "sk-openai-123"
+            os.environ["OPENAI_BASE_URL"] = "https://openai.example/v1"
+
+            config = load_config(root)
+            proxy_config = build_proxy_config_for_provider("openai", config.credentials)
+
+            self.assertEqual(proxy_config.auth_mode, "bearer")
+            self.assertEqual(proxy_config.oauth_token, "sk-openai-123")
+            self.assertEqual(proxy_config.upstream_url, "https://openai.example/v1")
+
     def test_proxy_config_dataclass(self) -> None:
         """测试 ProxyConfig 数据类"""
         proxy_config = ProxyConfig(
@@ -78,12 +100,34 @@ class TestCredentialProxy(unittest.TestCase):
             api_key="sk-test",
             oauth_token="oauth-token",
             upstream_url="https://api.anthropic.com",
+            api_key_header="x-api-key",
         )
 
         self.assertEqual(proxy_config.auth_mode, "api-key")
         self.assertEqual(proxy_config.api_key, "sk-test")
         self.assertEqual(proxy_config.oauth_token, "oauth-token")
         self.assertEqual(proxy_config.upstream_url, "https://api.anthropic.com")
+        self.assertEqual(proxy_config.api_key_header, "x-api-key")
+
+    def test_rewrite_request_line_for_upstream_with_path_prefix(self) -> None:
+        request_line = "POST /v1/messages?stream=true HTTP/1.1"
+
+        rewritten = rewrite_request_line_for_upstream(
+            request_line,
+            "https://proxy.example.com/anthropic",
+        )
+
+        self.assertEqual(rewritten, "POST /anthropic/v1/messages?stream=true HTTP/1.1")
+
+    def test_rewrite_request_line_for_upstream_merges_base_query(self) -> None:
+        request_line = "GET /v1/messages HTTP/1.1"
+
+        rewritten = rewrite_request_line_for_upstream(
+            request_line,
+            "https://proxy.example.com/anthropic?api-version=2024-01-01",
+        )
+
+        self.assertEqual(rewritten, "GET /anthropic/v1/messages?api-version=2024-01-01 HTTP/1.1")
 
 
 class TestMountSecurity(unittest.TestCase):
@@ -255,6 +299,58 @@ class TestValidateAdditionalMounts(unittest.TestCase):
         # 由于没有允许列表，应该返回空
         result = validate_additional_mounts(mounts, "test_group", False)
         self.assertEqual(result, [])
+
+    def test_validate_additional_mounts_preserves_readonly_flag(self) -> None:
+        """测试 readonly 语义不会反转"""
+        import iflowclaw.mount_security as ms
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            allowed_dir = root / "allowed"
+            allowed_dir.mkdir(parents=True, exist_ok=True)
+            allowlist_path = root / "mount-allowlist.json"
+            allowlist_path.write_text(
+                json.dumps(
+                    {
+                        "allowedRoots": [{"path": str(root), "allowReadWrite": True}],
+                        "blockedPatterns": [],
+                        "nonMainReadOnly": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            ms._cached_allowlist = None
+            ms._allowlist_load_error = None
+            ms.load_mount_allowlist(allowlist_path)
+
+            readonly_result = validate_additional_mounts(
+                [
+                    {
+                        "hostPath": str(allowed_dir),
+                        "containerPath": "data",
+                        "readonly": True,
+                    }
+                ],
+                "main",
+                True,
+            )
+            self.assertEqual(len(readonly_result), 1)
+            self.assertTrue(readonly_result[0][2])
+
+            readwrite_result = validate_additional_mounts(
+                [
+                    {
+                        "hostPath": str(allowed_dir),
+                        "containerPath": "data",
+                        "readonly": False,
+                    }
+                ],
+                "main",
+                True,
+            )
+            self.assertEqual(len(readwrite_result), 1)
+            self.assertFalse(readwrite_result[0][2])
 
 
 if __name__ == "__main__":

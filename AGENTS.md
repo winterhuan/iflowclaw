@@ -10,7 +10,7 @@ iFlowClaw 是一个轻量级个人 AI 助手，基于 Python 构建，支持飞�
 |------|------|----------|
 | **iFlow CLI SDK** | `iflow-cli-sdk` | 直连 |
 | **Claude Agent SDK** | `claude-agent-sdk` | 直连 / 容器 |
-| **Agno** | `agno` (OpenAI/Anthropic/Google/Groq/Ollama) | 直连 / 容器 |
+| **Agno** | `agno` (OpenAI) | 直连 / 容器 |
 | **Container** | Docker/Podman 容器隔离执行 | 容器 |
 
 核心目标是：
@@ -79,7 +79,7 @@ iflowclaw/
 │   │       ├── base.py             # 后端协议定义
 │   │       ├── iflow.py            # IFlow SDK 后端
 │   │       ├── claude.py           # Claude SDK 后端
-│   │       ├── agno.py             # Agno 后端（多模型支持）
+│   │       ├── agno.py             # Agno 后端（仅 OpenAI）
 │   │       └── container.py        # 容器化执行后端
 │   │
 │   ├── channels/                   # 消息渠道
@@ -172,24 +172,12 @@ export CLAUDE_CODE_OAUTH_TOKEN="..."
 
 ### Agno 后端
 
-Agno 支持多种模型提供商，通过 `AGNO_MODEL` 配置模型：
+Agno 仅支持 OpenAI 模型，通过 `AGNO_MODEL` 配置模型：
 
 ```bash
 # OpenAI
 export AGNO_MODEL="openai:gpt-4o"
 export OPENAI_API_KEY="sk-..."
-
-# Anthropic
-export AGNO_MODEL="anthropic:claude-sonnet-4-20250514"
-
-# Google
-export AGNO_MODEL="google:gemini-2.0-flash"
-
-# Groq
-export AGNO_MODEL="groq:llama-3.1-70b"
-
-# Ollama（本地）
-export AGNO_MODEL="ollama:llama3.1"
 ```
 
 ## 配置说明
@@ -208,9 +196,9 @@ export AGNO_MODEL="ollama:llama3.1"
 | `ASSISTANT_NAME` | `iFlow` | 助手名称，影响触发词正则 |
 | `AGENT_BACKEND` | `iflow` | 默认 Agent 后端 (`iflow` / `claude` / `agno` / `container`) |
 | `EXECUTION_MODE` | `direct` | 默认执行模式 (`direct` / `container`) |
-| `IFLOW_MODEL` | - | iFlow 后端默认模型 |
+| `OPENAI_MODEL` | - | iFlow 后端默认模型 |
 | `CLAUDE_MODEL` | - | Claude 后端默认模型 |
-| `AGNO_MODEL` | - | Agno 后端默认模型 (格式: `provider:model`) |
+| `AGNO_MODEL` | - | Agno 后端默认模型 (`gpt-4o` 或 `openai:gpt-4o`) |
 | `AGENT_TIMEOUT` | `300000` | 单次 Agent 超时（ms） |
 | `IDLE_TIMEOUT` | `180000` | 空闲关闭输入等待时长（ms） |
 | `MAX_CONCURRENT_AGENTS` | `5` | 全局并发 Agent 数上限 |

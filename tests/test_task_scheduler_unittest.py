@@ -8,6 +8,13 @@ from datetime import UTC, datetime, timedelta
 from iflowclaw.task_scheduler import _parse_iso, _to_utc_iso, compute_next_run
 from iflowclaw.types import ScheduledTask
 
+try:
+    import croniter as _croniter  # noqa: F401
+
+    _HAS_CRONITER = True
+except ImportError:
+    _HAS_CRONITER = False
+
 
 class TestTimeUtils(unittest.TestCase):
     """时间工具函数测试"""
@@ -141,6 +148,7 @@ class TestComputeNextRun(unittest.TestCase):
         expected = now + timedelta(seconds=60)
         self.assertAlmostEqual(next_run.timestamp(), expected.timestamp(), delta=1)
 
+    @unittest.skipUnless(_HAS_CRONITER, "croniter not installed")
     def test_cron_schedule(self) -> None:
         """测试 cron 调度"""
         task = ScheduledTask(
@@ -167,6 +175,7 @@ class TestComputeNextRun(unittest.TestCase):
         self.assertEqual(next_run.hour, 1)
         self.assertEqual(next_run.minute, 0)
 
+    @unittest.skipUnless(_HAS_CRONITER, "croniter not installed")
     def test_cron_schedule_daily(self) -> None:
         """测试每日 cron 调度"""
         task = ScheduledTask(

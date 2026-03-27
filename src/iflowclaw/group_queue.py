@@ -62,8 +62,6 @@ class GroupQueue:
         await self._enqueue(task.chat_jid, ScheduledTaskEvent(task=task))
 
     def send_message(self, chat_jid: str, text: str) -> bool:
-        if chat_jid in self._container_groups:
-            return self._write_container_ipc_input(chat_jid, text)
         pipe = self._active_pipes.get(chat_jid)
         if pipe is None:
             return False

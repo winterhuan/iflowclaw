@@ -102,7 +102,7 @@ class TestBackendConfiguration(TestMultiBackendIntegration):
         from iflowclaw.agents.runner import _DEFAULT_MODEL_ATTR
 
         expected_attrs = {
-            "iflow": "iflow_model",
+            "iflow": "openai_model",
             "claude": "claude_model",
             "agno": "agno_model",
             "container": "claude_model",
@@ -330,14 +330,14 @@ class TestContainerEntry(TestMultiBackendIntegration):
 
         assert config.default_backend == "claude"
         assert config.claude_model == "test-model"
-        assert config.iflow_model is None
+        assert config.credentials.openai_model is None
         assert config.agno_model is None
         assert config.assistant_name == "TestBot"
 
         # 测试iFlow后端配置
         config_iflow = build_config("iflow", "iflow-model")
         assert config_iflow.default_backend == "iflow"
-        assert config_iflow.iflow_model == "iflow-model"
+        assert config_iflow.credentials.openai_model == "iflow-model"
         assert config_iflow.claude_model is None
 
         # 测试Agno后端配置

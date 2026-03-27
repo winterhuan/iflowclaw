@@ -5,9 +5,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from croniter import croniter
-
-from .db import get_due_tasks, log_task_run, update_task_after_run
+from .db import claim_due_tasks, log_task_run, set_task_status, update_task_after_run
 from .logging import get_logger
 from .types import ScheduledTask, TaskRunLog
 
@@ -25,6 +23,14 @@ def _parse_iso(ts: str) -> datetime:
 
 def _to_utc_iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _get_croniter():
+    try:
+        from croniter import croniter
+    except ImportError as e:
+        raise RuntimeError("cron schedules require the 'croniter' package") from e
+    return croniter
 
 
 def compute_next_run(task: ScheduledTask, *, now_utc: datetime, timezone_name: str) -> str | None:
@@ -52,6 +58,7 @@ def compute_next_run(task: ScheduledTask, *, now_utc: datetime, timezone_name: s
 
     tz = ZoneInfo(timezone_name)
     base_local = now_utc.astimezone(tz)
+    croniter = _get_croniter()
     it = croniter(task.schedule_value, base_local)
     next_local = it.get_next(datetime)
     if next_local.tzinfo is None:
@@ -77,14 +84,18 @@ async def start_scheduler_loop(
             now_iso = _to_utc_iso(now)
 
             try:
-                due = get_due_tasks(now_iso)
+                due = claim_due_tasks(now_iso)
             except Exception as e:
                 logger.exception("scheduler: get_due_tasks failed: %s", e)
                 await asyncio.sleep(poll_interval_ms / 1000)
                 continue
 
             for task in due:
-                await enqueue_task(task)
+                try:
+                    await enqueue_task(task)
+                except Exception as e:
+                    set_task_status(task.id, "active")
+                    logger.exception("scheduler: enqueue_task failed for %s: %s", task.id, e)
 
             await asyncio.sleep(poll_interval_ms / 1000)
     finally:
@@ -118,7 +129,7 @@ async def record_task_run(
         logger.exception("scheduler: log_task_run failed: %s", e)
 
     next_run = compute_next_run(task, now_utc=finished_at.astimezone(UTC), timezone_name=timezone_name)
-    new_status = "completed" if task.schedule_type == "once" else None
+    new_status = "completed" if task.schedule_type == "once" else "active"
     try:
         update_task_after_run(
             task.id,

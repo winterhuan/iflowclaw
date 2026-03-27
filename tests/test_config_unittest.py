@@ -128,8 +128,60 @@ class TestAppConfig(unittest.TestCase):
             self.assertEqual(config.scheduler_poll_interval_ms, 60000)
             self.assertEqual(config.ipc_poll_interval_ms, 1000)
             self.assertEqual(config.max_concurrent_agents, 5)
+            self.assertEqual(config.log_level, "INFO")
             self.assertEqual(config.default_backend, "iflow")
             self.assertEqual(config.default_execution_mode, "direct")
+
+    def test_config_supports_execution_mode_alias(self) -> None:
+        """测试兼容 EXECUTION_MODE 配置名"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "store").mkdir(parents=True, exist_ok=True)
+            env_file = root / ".env"
+            env_file.write_text(
+                "FEISHU_APP_ID=test_id\n"
+                "FEISHU_APP_SECRET=test_secret\n"
+                "EXECUTION_MODE=container\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root)
+
+            self.assertEqual(config.default_execution_mode, "container")
+
+    def test_config_loads_log_level(self) -> None:
+        """测试日志级别配置加载"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "store").mkdir(parents=True, exist_ok=True)
+            env_file = root / ".env"
+            env_file.write_text(
+                "FEISHU_APP_ID=test_id\n"
+                "FEISHU_APP_SECRET=test_secret\n"
+                "LOG_LEVEL=debug\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root)
+
+            self.assertEqual(config.log_level, "DEBUG")
+
+    def test_config_supports_container_as_default_backend(self) -> None:
+        """测试 AGENT_BACKEND=container 生效"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "store").mkdir(parents=True, exist_ok=True)
+            env_file = root / ".env"
+            env_file.write_text(
+                "FEISHU_APP_ID=test_id\n"
+                "FEISHU_APP_SECRET=test_secret\n"
+                "AGENT_BACKEND=container\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(root)
+
+            self.assertEqual(config.default_backend, "container")
 
     def test_config_trigger_pattern(self) -> None:
         """测试触发词正则表达式"""

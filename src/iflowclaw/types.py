@@ -4,9 +4,20 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+# --- Constants ---
+MAIN_GROUP_NAME = "main"
+MAIN_GROUP_FOLDER = "main"
+
+STATUS_SUCCESS = "success"
+STATUS_ERROR = "error"
+
+EXECUTION_MODE_DIRECT = "direct"
+EXECUTION_MODE_CONTAINER = "container"
+
+# --- Type Aliases ---
 ScheduleType = Literal["cron", "interval", "once"]
 ContextMode = Literal["group", "isolated"]
-TaskStatus = Literal["active", "paused", "completed"]
+TaskStatus = Literal["active", "paused", "running", "completed"]
 ExecutionMode = Literal["direct", "container"]
 
 

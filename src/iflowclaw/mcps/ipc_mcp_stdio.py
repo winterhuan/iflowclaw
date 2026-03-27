@@ -14,8 +14,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from croniter import croniter
-
 # Context from environment variables
 CHAT_JID = os.environ.get("IFLOWCLAW_CHAT_JID") or ""
 GROUP_FOLDER = os.environ.get("IFLOWCLAW_GROUP_FOLDER") or ""
@@ -46,6 +44,14 @@ def read_tasks_snapshot() -> list[dict[str, Any]]:
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, Exception):
         return []
+
+
+def _require_croniter():
+    try:
+        from croniter import croniter
+    except ImportError as e:
+        raise RuntimeError("cron schedules require the 'croniter' package") from e
+    return croniter
 
 
 def main() -> int:
@@ -80,6 +86,7 @@ def main() -> int:
     ) -> str:
         """Schedule a recurring or one-time task."""
         if schedule_type == "cron":
+            croniter = _require_croniter()
             if not croniter.is_valid(schedule_value):
                 raise ValueError(f'Invalid cron: "{schedule_value}"')
         elif schedule_type == "interval":
@@ -174,6 +181,7 @@ def main() -> int:
     ) -> str:
         """Update an existing scheduled task."""
         if schedule_type == "cron" and schedule_value is not None:
+            croniter = _require_croniter()
             if not croniter.is_valid(schedule_value):
                 raise ValueError(f'Invalid cron: "{schedule_value}"')
         if schedule_type == "interval" and schedule_value is not None:

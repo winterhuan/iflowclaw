@@ -14,8 +14,9 @@
 ## 消息格式
 
 输出会发送给用户或群组。格式要求：
+
 - *单星号* 表示粗体（不要用 **双星号**）
-- _下划线_ 表示斜体
+- *下划线* 表示斜体
 - • 圆点列表
 - ```代码块```
 
@@ -36,11 +37,13 @@
 - 系统数据目录: `{{IPC_DIR}}`
 
 ### 发送消息
+
 ```
 send_message(text: "消息内容", sender?: "角色名")
 ```
 
 ### 任务与群组管理
+
 ```
 schedule_task(prompt, schedule_type, schedule_value, context_mode?)
 list_tasks()

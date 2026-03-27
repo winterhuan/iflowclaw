@@ -9,7 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import AppConfig
-from .db import create_task, delete_task, list_tasks, set_registered_group, set_task_status, update_task
+from .db import create_task, delete_task, get_task, list_tasks, set_registered_group, set_task_status, update_task
 from .logging import get_logger
 from .snapshots import write_tasks_snapshot
 from .task_scheduler import compute_next_run
@@ -154,6 +154,7 @@ async def _handle_ipc_file(
             is_main=False,
         )
         set_registered_group(jid, group)
+        registered_groups_by_jid[jid] = group
         return
 
     if typ == "schedule_task":
@@ -218,27 +219,35 @@ async def _handle_ipc_file(
         elif typ == "cancel_task":
             delete_task(task_id)
         else:
+            existing_task = get_task(task_id)
+            if existing_task is None:
+                raise ValueError(f"task not found: {task_id}")
+
             new_schedule_type = payload.get("schedule_type")
             new_schedule_value = payload.get("schedule_value")
+            new_context_mode = payload.get("context_mode")
             next_run_update = None
-            if new_schedule_type and new_schedule_value:
+            effective_schedule_type = new_schedule_type or existing_task.schedule_type
+            effective_schedule_value = new_schedule_value or existing_task.schedule_value
+            effective_context_mode = new_context_mode or existing_task.context_mode
+            if new_schedule_type is not None or new_schedule_value is not None:
                 now_utc = datetime.now(UTC)
                 tmp_task = ScheduledTask(
                     id="tmp",
-                    group_folder=source_folder,
-                    chat_jid="",
-                    prompt=payload.get("prompt") or "",
-                    schedule_type=new_schedule_type,  # type: ignore[assignment]
-                    schedule_value=new_schedule_value,
-                    context_mode="group",  # type: ignore[assignment]
+                    group_folder=existing_task.group_folder,
+                    chat_jid=existing_task.chat_jid,
+                    prompt=payload.get("prompt") or existing_task.prompt,
+                    schedule_type=effective_schedule_type,  # type: ignore[assignment]
+                    schedule_value=effective_schedule_value,
+                    context_mode=effective_context_mode,  # type: ignore[assignment]
                     next_run=None,
-                    last_run=None,
-                    last_result=None,
+                    last_run=existing_task.last_run,
+                    last_result=existing_task.last_result,
                     status="active",
-                    created_at=_utc_now_iso(),
+                    created_at=existing_task.created_at,
                 )
-                if new_schedule_type == "once":
-                    next_run_update = _parse_once_local_to_utc_iso(new_schedule_value, config.timezone)
+                if effective_schedule_type == "once":
+                    next_run_update = _parse_once_local_to_utc_iso(effective_schedule_value, config.timezone)
                 else:
                     next_run_update = compute_next_run(tmp_task, now_utc=now_utc, timezone_name=config.timezone)
             update_task(
@@ -246,6 +255,7 @@ async def _handle_ipc_file(
                 prompt=payload.get("prompt"),
                 schedule_type=new_schedule_type,
                 schedule_value=new_schedule_value,
+                context_mode=new_context_mode,
                 next_run=next_run_update,
             )
 

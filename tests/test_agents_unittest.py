@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from iflowclaw.agents.backends.base import BackendContext, BackendResult
+from iflowclaw.agents.backends.agno import _resolve_model as resolve_agno_model
+from iflowclaw.agents.backends.base import BackendConfigError, BackendContext, BackendResult
 from iflowclaw.agents.prompting import _process_agents_markdown, build_system_prompt
 from iflowclaw.agents.runner import AgentRunner, _resolve_execution_mode
 from iflowclaw.config import load_config
@@ -218,6 +222,35 @@ class TestResolveExecutionMode(unittest.TestCase):
 
         mode = _resolve_execution_mode(agent_config, self.config, is_main=False)
         self.assertEqual(mode, "container")
+
+
+class TestAgnoBackendConfig(unittest.TestCase):
+    def test_agno_rejects_non_openai_provider(self) -> None:
+        with self.assertRaises(BackendConfigError):
+            resolve_agno_model("anthropic:claude-sonnet")
+
+    def test_agno_accepts_plain_openai_model_name(self) -> None:
+        fake_agno = types.ModuleType("agno")
+        fake_agno_models = types.ModuleType("agno.models")
+        fake_module = types.ModuleType("agno.models.openai")
+
+        class _FakeOpenAIChat:
+            def __init__(self, *, id: str) -> None:
+                self.id = id
+
+        fake_module.OpenAIChat = _FakeOpenAIChat
+
+        with patch.dict(
+            sys.modules,
+            {
+                "agno": fake_agno,
+                "agno.models": fake_agno_models,
+                "agno.models.openai": fake_module,
+            },
+        ):
+            model = resolve_agno_model("gpt-4o")
+
+        self.assertEqual(model.id, "gpt-4o")
 
 
 class TestProcessAgentsMarkdown(unittest.TestCase):

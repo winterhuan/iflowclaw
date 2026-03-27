@@ -9,6 +9,7 @@ from pathlib import Path
 
 from iflowclaw.config import load_config
 from iflowclaw.db import (
+    claim_due_tasks,
     create_task,
     delete_task,
     get_all_chats,
@@ -22,6 +23,7 @@ from iflowclaw.db import (
     init_database,
     list_tasks,
     log_task_run,
+    reset_running_tasks,
     set_registered_group,
     set_router_state,
     set_session,
@@ -425,6 +427,32 @@ class TestTaskOperations(unittest.TestCase):
         # 查询 00:30 之前的任务
         due = get_due_tasks("2026-01-01T00:30:00Z")
         self.assertEqual(len(due), 0)
+
+    def test_claim_due_tasks_marks_tasks_running(self) -> None:
+        """测试认领到期任务时会标记为 running，避免重复认领"""
+        task = create_task(
+            group_folder="main",
+            chat_jid="feishu:chat1",
+            prompt="Task 1",
+            schedule_type="cron",
+            schedule_value="0 * * * *",
+            context_mode="group",
+            next_run="2026-01-01T01:00:00Z",
+        )
+
+        first_claim = claim_due_tasks("2026-01-01T01:30:00Z")
+        self.assertEqual(len(first_claim), 1)
+        self.assertEqual(first_claim[0].id, task.id)
+
+        tasks = list_tasks()
+        self.assertEqual(tasks[0].status, "running")
+
+        second_claim = claim_due_tasks("2026-01-01T01:30:00Z")
+        self.assertEqual(second_claim, [])
+
+        reset_running_tasks()
+        tasks = list_tasks()
+        self.assertEqual(tasks[0].status, "active")
 
     def test_set_task_status(self) -> None:
         """测试设置任务状态"""

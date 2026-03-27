@@ -115,6 +115,7 @@ def build_config(backend: str, model: str | None) -> AppConfig:
         anthropic_base_url=os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
         openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com"),
+        openai_model=model if backend == "iflow" else None,
     )
 
     # 注意：容器内只有一个群组目录，被挂载到 /workspace/group
@@ -141,6 +142,7 @@ def build_config(backend: str, model: str | None) -> AppConfig:
         container_image="",
         credential_proxy_port=3001,
         timezone=os.environ.get("TZ", "Asia/Shanghai"),
+        log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         default_backend=backend,
         default_execution_mode="direct",
         claude_model=model if backend == "claude" else None,

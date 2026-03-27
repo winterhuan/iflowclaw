@@ -132,7 +132,7 @@ pytest tests_integration/test_multi_backend.py -v -k "claude"
 
 ```bash
 export OPENAI_API_KEY="..."
-export IFLOW_MODEL="..."
+export OPENAI_MODEL="..."
 pytest tests_integration/test_multi_backend.py -v -k "iflow"
 ```
 

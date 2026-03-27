@@ -48,6 +48,7 @@ class AppConfig:
     container_image: str
     credential_proxy_port: int
     timezone: str
+    log_level: str
     default_backend: RuntimeBackend
     default_execution_mode: str
     claude_model: str | None
@@ -68,12 +69,14 @@ def load_config(project_root: Path | None = None) -> AppConfig:
             "IDLE_TIMEOUT",
             "MAX_CONCURRENT_AGENTS",
             "AGENT_BACKEND",
+            "EXECUTION_MODE",
             "DEFAULT_EXECUTION_MODE",
             "CLAUDE_MODEL",
             "AGNO_MODEL",
             "CONTAINER_TIMEOUT",
             "CONTAINER_IMAGE",
             "CREDENTIAL_PROXY_PORT",
+            "LOG_LEVEL",
             # 凭证
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_BASE_URL",
@@ -92,9 +95,16 @@ def load_config(project_root: Path | None = None) -> AppConfig:
     assistant_name = _env("ASSISTANT_NAME", "iFlow")
     timezone = _env("TZ", "Asia/Shanghai")
     backend = _env("AGENT_BACKEND", "iflow").strip().lower()
-    default_backend: RuntimeBackend = "claude" if backend == "claude" else ("agno" if backend == "agno" else "iflow")
+    if backend in {"claude", "agno", "container"}:
+        default_backend: RuntimeBackend = backend
+    else:
+        default_backend = "iflow"
     escaped_name = re.escape(assistant_name)
-    default_execution_mode = _env("DEFAULT_EXECUTION_MODE", "direct").strip().lower()
+    default_execution_mode = (
+        _env("DEFAULT_EXECUTION_MODE")
+        or _env("EXECUTION_MODE", "direct")
+    ).strip().lower()
+    log_level = _env("LOG_LEVEL", "INFO").strip().upper() or "INFO"
     config_dir = Path(os.environ.get("HOME", str(Path.home()))) / ".config" / "iflowclaw"
 
     # 构建凭证配置
@@ -128,6 +138,7 @@ def load_config(project_root: Path | None = None) -> AppConfig:
         container_image=_env("CONTAINER_IMAGE", "iflowclaw-agent:latest"),
         credential_proxy_port=int(_env("CREDENTIAL_PROXY_PORT", "3001")),
         timezone=timezone,
+        log_level=log_level,
         default_backend=default_backend,
         default_execution_mode=default_execution_mode,
         claude_model=_env("CLAUDE_MODEL"),
